@@ -226,7 +226,7 @@ int host_open_serial(int port, long int baud)
 			return result;
 
 			/* finish the setup */
-		cport->dcb.Id = cport->id;
+		cport->dcb = cport->id;
 		for (i=0; baud_list[i].rate != 0; i++) {
 			if (baud_list[i].rate == baud)
 				break;

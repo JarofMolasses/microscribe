@@ -12,7 +12,7 @@
  *      Requires Microscribe HCI firmware version MSCR1-1C or later
  */
 
-#include "Arduino.h"
+#include <Arduino.h>
 #include <stdio.h>
 #include "hci.h"
 #include "drive.h"
@@ -185,11 +185,14 @@ hci_result hci_connect(hci_rec *hci)
 		/* Open the port */
 		if (host_open_serial(port, hci->baud_rate))
 		{
+			Serial.println("Opened HCI serial port");
 			/* Get ready for slow process */
 			hci_slow_timeout(hci);
 
 			/* Then synch to the HCI */
+			Serial.println("Started HCI autosynch");
 			result = hci_autosynch(hci);
+
 			if (result == SUCCESS)
 			{
 				/* If it worked, ready to BEGIN session */
@@ -215,7 +218,7 @@ hci_result hci_connect(hci_rec *hci)
 hci_result hci_autosynch(hci_rec *hci)
 {
 	int ch, port = hci->port_num;
-	char *sign_ch = SIGNON_STR;
+	char *sign_ch = SIGNON_STR;		// pointer to beginning char of activation string
 	int  signed_on = 0;
 
 	host_start_timeout(port);
@@ -223,19 +226,26 @@ hci_result hci_autosynch(hci_rec *hci)
 	{
 		hci_end(hci);   /* In case session wasn't ended before */
 		host_write_string(port, SIGNON_STR);
-    Serial.print("<"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    Serial.print(SIGNON_STR); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    Serial.println(">"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+		Serial.print("Sent activation string: "); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+		Serial.print(SIGNON_STR); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+		Serial.println(""); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 		host_pause(SIGNON_PAUSE);
 		while (((ch=host_read_char(port)) != -1) && !signed_on)
 		{
-      
+			//while not signed on yet:
+			// 	read one char
+			// 		if char matches first letter of activation string
+			// 			advance internal pointer to next letter of activation string
+			// 			if null character reached (end of string) then quit successful
+			//		else 
+			//			reset internal pointer to first letter of activation string
 			if (ch == *sign_ch)
 			{
-				if (!*++sign_ch)
+				Serial.print("Response: ");
+				Serial.println((char)ch);
+				if (! *++sign_ch)
 				{
 					signed_on = 1;
-          
 				}
 			}
 			else
@@ -246,8 +256,16 @@ hci_result hci_autosynch(hci_rec *hci)
 	}
 	host_flush_serial(port);        /* Get rid of excess SIGNON strings in buffer */
 
-	if (signed_on) return SUCCESS;
-	else return NO_HCI;
+	if (signed_on) 
+	{
+		Serial.println("Connected successfully\n\n");
+		return SUCCESS;
+	}
+	else 
+	{
+		Serial.println("Failed to sign on\n\n");
+		return NO_HCI;
+	}
 }
 
 
@@ -720,9 +738,10 @@ hci_result hci_wait_packet(hci_rec *hci)
 	hci_result result;
 	hci_fast_timeout(hci);
 	host_start_timeout(hci->port_num);
+	//Serial.println("Waiting for packet");  //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	while ((result = hci_check_packet(hci,HCI_CHECK_FGND)) == NO_PACKET_YET)
 		;
-
+	//Serial.println("Packet received"); 	//<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	return result;
 
 #if 0
@@ -751,9 +770,9 @@ hci_result hci_check_packet(hci_rec *hci, int checkType)
   //Serial.println("HCI check packet"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 	if ((result = hci_build_packet(hci,checkType)) == SUCCESS)
 	{
-		Serial.println("Build"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+		//Serial.println("Build"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 		if ((result = hci_parse_packet(hci)) == SUCCESS) {
-			Serial.println("Parse"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+			//Serial.println("Parse"); //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 			return result;
 		}
 		else

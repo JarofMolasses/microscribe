@@ -12,6 +12,7 @@
  *      Requires Microscribe HCI firmware version MSCR1-1C or later
  */
 
+#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include "hci.h"
 #include "drive.h"

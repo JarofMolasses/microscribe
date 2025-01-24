@@ -10,6 +10,8 @@
  *      Requires HCI firmware version 2.0 or later
  */
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <conio.h>
@@ -45,11 +47,11 @@ void print_encoders(void)
 
 	result = arm_6joint_update( &arm );
 
-	while( !kbhit() && (result == SUCCESS)){
+	while( !_kbhit() && (result == SUCCESS)){
 		hci_std_cmd( &(arm.hci), 0, 0, 7);
 		result = hci_wait_packet(&arm.hci);
 		if( result == SUCCESS ){
-			gotoxy(1,3);
+			//gotoxy(1,3);
 			printf("Shoulder Yaw:\t %d (16384 PPR)\t\t\n", arm.hci.encoder[0] );
 			printf("Shoulder Pitch:\t %d (16384 PPR)\t\t\n", arm.hci.encoder[1] );
 			printf("Elbow:\t\t %d (8192 PPR)\t\t\n", arm.hci.encoder[2] );
@@ -59,7 +61,7 @@ void print_encoders(void)
 			printf("Aux/Expansion:\t %d (16384 PPR)\t\t\n", arm.hci.encoder[6] );
 			}
 		}
-   if (kbhit()) getch();
+   if (_kbhit()) _getch();
 }
 
 void print_angles(void)
@@ -70,7 +72,7 @@ void print_angles(void)
 
 	result = arm_6joint_update( &arm );
 
-	while( !kbhit() && (result == SUCCESS)){
+	while( !_kbhit() && (result == SUCCESS)){
 		result = arm_6joint_update( &arm );
   		if( result == SUCCESS ){
 			gotoxy(1,3);
@@ -81,7 +83,7 @@ void print_angles(void)
 			printf("Wrist Pitch:\t %3.0f degrees\t\n", arm.joint_deg[4] );
 			}
 		}
-   if (kbhit()) getch();
+   if (_kbhit()) _getch();
 }
 
 void print_xyz(void)
@@ -91,7 +93,7 @@ void print_xyz(void)
 	printf("XYZ/Button Data. Hit any key to quit");
 
 	result=arm_stylus_6DOF_update(&arm);
-	while( !kbhit() && (result == SUCCESS) ) {
+	while( !_kbhit() && (result == SUCCESS) ) {
 		result=arm_stylus_6DOF_update(&arm);
 		if (result == SUCCESS) {
 			gotoxy(1,5);
@@ -105,7 +107,7 @@ void print_xyz(void)
 				}
 			}
 		}
-   if (kbhit()) getch();
+   if (_kbhit()) _getch();
 }
 
 arm_result ChangePortBaud(void)
@@ -147,7 +149,7 @@ void main(void)
 		printf(" 2 - Display XYZ, orientation, & button data\n");
 		printf(" 1 - Change port/baud settings\n");
 		printf(" 0 - Quit\n");
-		choice = getch();
+		choice = _getch();
 		clrscr();
 
 		switch(choice) {
