@@ -12,6 +12,19 @@
 arm_rec arm;
 long baud = 19200L;   // <<<<<<<<< HCI has an autosynch function, but it seems to only work with 19200
 int port = 1;
+byte buffer[1]; 
+
+void printXYZ(arm_rec arm);
+void home(arm_rec arm);
+
+typedef enum PrintMode{
+  PRINT_CONT,
+  PRINT_DISCONT,
+  PRINT_NONE
+} printmode_t;
+
+printmode_t printMode = PRINT_CONT;
+arm_result result;
 
 void setup() {
   Serial.begin(9600);
@@ -20,20 +33,76 @@ void setup() {
 
   arm_init(&arm);
   arm_install_simple(&arm);
-  arm_result result = arm_connect(&arm, port, baud);
+  result = arm_connect(&arm, port, baud);
+  delay(1000);
+
+  // Home arm at bootup position
+  result = arm_home_pos(&arm);
 }
 
 void loop() {
-   // get update from Microscribe
-   arm_result result = arm_stylus_6DOF_update(&arm);
+  // Always check for a byte command and process it
+  if(Serial.available()  )
+  {
+    Serial.readBytes(buffer, 1);
+    switch ((int)buffer[0])
+    {
+      case 'c':
+        // default continuous mode, report XYZ constantly
+        printMode = PRINT_CONT;
+        Serial.println("Continuous mode");
+        break;
+      case 'n':
+        printMode = PRINT_NONE;
+        Serial.println("Printing off");
+        break;
+      case 'd':
+      // discontinuous mode
+        printMode = PRINT_DISCONT;
+        Serial.println("Discontinuous mode");
+        break;
+      case 'h':
+      // home 
+        home(arm);
+      default:
+        break;
+    }
+  }
+
+
+  // get update from Microscribe
+  result = arm_stylus_6DOF_update(&arm);
    
 	// print coordinates to Serial Monitor
-  Serial.print(arm.stylus_tip.x);
-  Serial.print("   ");
-  Serial.print(arm.stylus_tip.y);
-  Serial.print("   ");
-  Serial.print(arm.stylus_tip.z);
-  Serial.println(" ");
+  switch(printMode)
+  {
+    case PRINT_CONT:
+      printXYZ(arm);
+    break;
+    case PRINT_NONE:
+    break;
+    case PRINT_DISCONT:
+    break;
+    default:
+    break;
+  }
 
   delay(100); // rudimentary spam limiter. Use timer interrupts for serious applications
+}
+
+void printXYZ(arm_rec arm)
+{
+  Serial.print("XYZ,");
+  Serial.print(arm.stylus_tip.x);
+  Serial.print(",");
+  Serial.print(arm.stylus_tip.y);
+  Serial.print(",");
+  Serial.print(arm.stylus_tip.z);
+  Serial.println("");
+}
+
+void home(arm_rec arm)
+{
+  arm_home_pos(&arm);
+  Serial.println("Home arm position");
 }
