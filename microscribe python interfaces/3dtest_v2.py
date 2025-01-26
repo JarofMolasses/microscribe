@@ -16,11 +16,9 @@ from mpl_toolkits.mplot3d import Axes3D
 
 import tkinter as tk
 from tkinter import *
-from tkinter.ttk import *
 from tkinter.filedialog import asksaveasfile
 
 import time
-from queue import Queue
 import serial
 
 
