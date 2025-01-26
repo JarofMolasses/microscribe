@@ -4,6 +4,8 @@
 # View class        (render elements)
 # Controller class  (GUI elements)
 
+# TODO: Separate the Arm Serial control from the View class so we can handle it better
+
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -15,14 +17,11 @@ from mpl_toolkits.mplot3d import Axes3D
 import tkinter as tk
 from tkinter import *
 from tkinter.ttk import *
+from tkinter.filedialog import asksaveasfile
 
 import time
 from queue import Queue
 import serial
-
-import threading
-
-
 
 
 # see: https://stackoverflow.com/questions/13685386/how-to-set-the-equal-aspect-ratio-for-all-axes-x-y-z
@@ -57,10 +56,9 @@ def set_axes_equal(ax):
 
 class plotData():
     def __init__(self):
-        self.remember_xyz_points = 64               
-        self.path_points = self.remember_xyz_points  # number of points to draw path of tip (ax.plot). 
-        self.tip_points = 1                          # number of points to show only the tip location (ax.scatter)
-        self.csv_points = 512                        # number of points in csv point cloud
+        self.path_points = 64                         # number of points to draw path of tip (ax.plot). 
+        self.tip_points = 1                           # number of points to show only the tip location (ax.scatter)
+        self.csv_points = 2048                        # number of points in csv point cloud
         self.x = []
         self.y = []
         self.z = []
@@ -72,16 +70,8 @@ class plotData():
         self.savez = []
     
     def set_num_points(self, num_points):
-        self.remember_xyz_points = num_points
         self.path_points = num_points
 
-    def toggle_path(self):
-        self.showPath = not self.showPath
-        if(not self.showPath):
-            self.path_points = 1
-        else:
-            self.path_points = self.remember_xyz_points
-    
     def clear_csv_data(self):
         self.savex = []
         self.savey = []
@@ -97,30 +87,45 @@ class plotData():
 
 class Arm():
     def __init__(self):
-        self.ser = serial.Serial('COM8',9600, timeout=5)
+        self.ser = serial.Serial('COM8',57600, timeout=5)
+        self.initialized = False
+
     def open_source(self):
         if(not self.ser.is_open):
             self.ser.open()
             self.ser.flushInput()
             time.sleep(2)
-            self.ser.write('c'.encode('utf-8'))      # turn on continuous reporting if not already enabled
+            self.ser.write('c'.encode('utf-8'))      # turn on continuous reporting 
+            #self.ser.write('q'.encode('utf-8'))       # turn on query-based reporting
 
     def home_arm(self):
-        print("Home arm")
+        print(">Home arm")
         self.ser.write('h'.encode('utf-8'))
 
-    def open_source(self):
-        if(not self.ser.is_open):
-            self.ser.open()
-            self.ser.flushInput()
-            time.sleep(2)
-            self.ser.write('c'.encode('utf-8'))      # turn on continuous reporting if not already enabled
+    # wait for handshaking at bootup
+    def wait_for_init(self):
+        print(">Waiting for hardware initialization...")
+        while(True):        # add a timeout
+            serial_rx= self.ser.readline().decode('utf-8')
+            print(serial_rx)
+            if "READY" in serial_rx:
+                print(">Arm initialized")
+                break
+
+    def wait_for_response(self):
+        print(">Waiting for response")
+        while(True):        # add a timeout
+            serial_rx= self.ser.readline().decode('utf-8')
+            if len(serial_rx)>0:
+                print(">Got a response:")
+                print(serial_rx)
+                break
 
 class View():
     def __init__(self, arm = None, plotdata = None):
         if arm is None:
             arm = Arm()
-        self.arm = arm
+        self.arm = arm          # TODO: get the Arm out of the View class, View should just act on the data. Use semaphores to write/read the lists
 
         if plotdata is None:
             plotdata = plotData()
@@ -136,15 +141,22 @@ class View():
         self.tip = self.ax.scatter([],[],[], color='turquoise', alpha = 1,s=20,zorder=1)
         self.cloud = self.ax.scatter([],[],[], color='red', alpha = 1,s=20,zorder=1)
 
-        self.text1 = self.fig.text(0, 0, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=12)  # for debugging
+        self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=12)  
         self.text2 = self.fig.text(0.5,0.95, "XYZ DATA", va='top', ha='center',color='lightgrey',fontsize=32)
-        self.text3 = self.fig.text(1,0, "NUMBER OF SAVED POINTS", va='bottom', ha='right', color='lightgrey', fontsize = 12)
+        self.text3 = self.fig.text(0, 0.03, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color='lightgrey', fontsize = 12)
         
         self.showPath = True
         self.showcsv = True
 
+        self.ax.set_xlim3d(-500,500)
+        self.ax.set_ylim3d(-500,500)
+        self.ax.set_zlim3d(-50, 300)
+        set_axes_equal(self.ax)
+
     def init_plot(self):
-        print("Init plot")
+        #print(">Init plot")
+
+        # push and pop the current viewport limits
         curxlim3d = self.ax.get_xlim()
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
@@ -152,6 +164,7 @@ class View():
         self.ax.set_xlim3d(curxlim3d)
         self.ax.set_ylim3d(curylim3d)
         self.ax.set_zlim3d(curzlim3d)
+        
         self.ax.xaxis.pane.fill = False
         self.ax.yaxis.pane.fill = False
         self.ax.zaxis.pane.fill = False
@@ -164,9 +177,6 @@ class View():
         self.ax.yaxis._axinfo["grid"]['linewidth'] = 0.1
         self.ax.xaxis._axinfo["grid"]['linewidth'] = 0.1
         self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.1
-        # self.ax.set_xlim3d(-500,500)
-        # self.ax.set_ylim3d(-500,500)
-        # self.ax.set_zlim3d(-50, 300)
     
     def reset_axis_limits(self):
         self.ax.set_xlim3d(-500,500)
@@ -191,30 +201,17 @@ class View():
         # I'm not using the iterator argument because my data is streaming from the serial port
 
         # use this block for clearing and redrawing. Not used with _offsets3d()
-        curxlim3d = self.ax.get_xlim()
-        curylim3d = self.ax.get_ylim()
-        curzlim3d = self.ax.get_zlim()
-        self.ax.cla()
-        self.ax.set_xlim3d(curxlim3d)
-        self.ax.set_ylim3d(curylim3d)
-        self.ax.set_zlim3d(curzlim3d)
-        self.ax.tick_params(axis='x', colors='grey')
-        self.ax.tick_params(axis='y', colors='grey')
-        self.ax.tick_params(axis='z', colors='grey')
-        self.ax.set_xlabel("X (mm)", color ='grey')
-        self.ax.set_ylabel("Y (mm)", color = 'grey')
-        self.ax.set_zlabel("Z (mm)", color ='grey')
-        self.ax.yaxis._axinfo["grid"]['linewidth'] = 0.1
-        self.ax.xaxis._axinfo["grid"]['linewidth'] = 0.1
-        self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.1
+        self.init_plot()
 
         packet_received = False
         while(not packet_received):
+            self.arm.ser.write(('>').encode('utf-8'))
             try:
                 serial_rx = self.arm.ser.readline()
                 try:
                     data = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
                     if(data.startswith("XYZ")):
+                        packet_received = True
                         xyz = data.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles optional)
                         #print(xyz)
                         dx = float(xyz[1])
@@ -239,7 +236,6 @@ class View():
                              self.data.tipy.pop(0)
                              self.data.tipz.pop(0)
 
-
                         #  You can update the plot with new data only
                         # graph._offsets3d = (x, y, z)
                         # graph2._offsets3d = (tipx,tipy,tipz)
@@ -256,14 +252,9 @@ class View():
                         pass
                 except UnicodeDecodeError:
                     pass
-
             except serial.SerialException as e:
             #There is no new data from serial port
                 pass
-            except TypeError as e:
-                #Disconnect of USB->UART occured
-                pass
-
 
 class GUI():
     def __init__(self, view = None, arm = None):
@@ -272,22 +263,22 @@ class GUI():
             view = View()
         self.view = view
 
-        if arm is None:
-            arm = Arm()
-        self.arm = arm
-
         root = tk.Tk()
         root.title("Microscribe 3D demo")
+        root.minsize(700,700)
         
         self.view.init_plot()
         self.view.reset_axis_limits()
         #self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, fargs = [], frames=100, interval=50, blit=False)     # this works. But it's not as flexible as controlling it myself
 
         menubar = Menu(root)
+        filemenu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label = 'File', menu=filemenu)
+        filemenu.add_command(label = 'Save point cloud',command = self.save_points)
         # microscribe options
         msmenu = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label='Microscribe options', menu = msmenu)
-        msmenu.add_command(label = 'Home', command = self.arm.home_arm)
+        msmenu.add_command(label = 'Home', command = self.view.arm.home_arm)
         # view options
         view = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label = 'View options', menu = view)
@@ -318,17 +309,26 @@ class GUI():
         self.root.config(menu = menubar)
         root.bind("<space>", self.save_cloud_point)
 
+    def  save_points(self):
+        defaultname = 'point_cloud_'+time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())+'.csv'
+        f = asksaveasfile(initialfile = defaultname)            # read the docs. this returns an opened filewriter
+        with f:
+            for i in range(len(self.view.data.savex)):
+                row = "%.2f, %.2f, %.2f\n" % (self.view.data.savex[i], self.view.data.savey[i], self.view.data.savez[i])
+                print("Write row to file:" + row)
+                f.write(row)
+
     def render(self):
         if(self.update):
             self.view.update_lines()            # update plot
             self.canvas.draw()                  # send updates to tkinder window. Without this the canvas doesn't update
-        self.root.after(50, self.render)        # schedule updates with .after
+        self._renderjob = self.root.after(25, self.render)        # schedule updates with .after
     
     def render_toggle(self):
         self.update = not self.update
 
     def reset_plot(self):
-        print("Reset plot")
+        print(">Reset plot")
         self.view.data.clear_display_data()
         self.view.data.clear_csv_data()
         self.view.init_plot()
@@ -360,10 +360,14 @@ class GUI():
         self.canvas.draw()               # send updates to tkinder window
 
     def save_cloud_point(self, e):
-        print("saved point to csv")
+        #print(">Saved point to csv")
         self.view.data.savex.append(self.view.data.tipx[0])
         self.view.data.savey.append(self.view.data.tipy[0])
         self.view.data.savez.append(self.view.data.tipz[0])
+        if(len(self.view.data.savex)>self.view.data.csv_points):
+            self.view.data.savex.pop()
+            self.view.data.savey.pop()
+            self.view.data.savez.pop()
     
 class App():
     def __init__(self, arm = None, view = None, gui = None):
@@ -372,7 +376,7 @@ class App():
         if view is None:
             view = View(arm)
         if gui is None:
-            gui = GUI(view, arm)
+            gui = GUI(view)
 
         self.gui = gui
         self.view = view
@@ -380,6 +384,20 @@ class App():
 
 if __name__ == "__main__":
     app = App()
-    app.arm.open_source()
+
+    if(not app.view.arm.ser.is_open):
+        print(">Opening serial port")
+        app.view.arm.ser.open()
+        app.view.arm.ser.flushInput()
+        time.sleep(2)
+
+    app.view.arm.wait_for_init()
+
+    print(">Setting datastream mode")
+    # app.view.arm.ser.write('c'.encode("utf-8"))      # turn on continuous reporting 
+    app.view.arm.ser.write('q'.encode('utf-8'))       # turn on query-based reporting
+    # app.view.arm.ser.write('>\n'.encode('utf-8'))
+    app.view.arm.wait_for_response()
+
     app.gui.render()
     app.gui.root.mainloop()

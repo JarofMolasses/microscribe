@@ -20,14 +20,15 @@ void home(arm_rec arm);
 typedef enum PrintMode{
   PRINT_CONT,
   PRINT_DISCONT,
-  PRINT_NONE
+  PRINT_NONE,
+  PRINT_QUERY
 } printmode_t;
 
-printmode_t printMode = PRINT_CONT;
+printmode_t printMode = PRINT_QUERY;
 arm_result result;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(57600);
   delay(1000);
   // Initialize and connect Microscribe arm
 
@@ -38,11 +39,12 @@ void setup() {
 
   // Home arm at bootup position
   result = arm_home_pos(&arm);
+  Serial.println("READY");
 }
 
 void loop() {
   // Always check for a byte command and process it
-  if(Serial.available()  )
+  if(Serial.available())
   {
     Serial.readBytes(buffer, 1);
     switch ((int)buffer[0])
@@ -61,9 +63,22 @@ void loop() {
         printMode = PRINT_DISCONT;
         Serial.println("Discontinuous mode");
         break;
+      case 'q':
+      // query mode
+        printMode = PRINT_QUERY;
+        Serial.println("Query mode");
+        break;
       case 'h':
       // home 
         home(arm);
+        break;
+      case '>':
+      // query command
+        if(printMode == PRINT_QUERY)
+        {
+          printXYZ(arm);
+        }
+        break;
       default:
         break;
     }
@@ -78,10 +93,6 @@ void loop() {
   {
     case PRINT_CONT:
       printXYZ(arm);
-    break;
-    case PRINT_NONE:
-    break;
-    case PRINT_DISCONT:
     break;
     default:
     break;
@@ -98,6 +109,12 @@ void printXYZ(arm_rec arm)
   Serial.print(arm.stylus_tip.y);
   Serial.print(",");
   Serial.print(arm.stylus_tip.z);
+  Serial.print(",");
+  Serial.print(arm.stylus_dir.x);
+  Serial.print(",");
+  Serial.print(arm.stylus_dir.y);
+  Serial.print(",");
+  Serial.print(arm.stylus_dir.z);
   Serial.println("");
 }
 
