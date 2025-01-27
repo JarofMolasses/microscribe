@@ -71,7 +71,7 @@ void arm_init(arm_rec *arm)
 
   arm->len_units = MM; // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
   arm->ang_units = DEGREES;
-  arm->ang_format = ZYX_EULER;	/* same as ZYX_EULER */
+  arm->ang_format = XYZ_FIXED;	/* same as ZYX_EULER */
 
   arm->timer_report = 0;
   arm->anlg_reports = 0;
@@ -972,9 +972,7 @@ void arm_calc_stylus_dir(arm_rec *arm)
        || (arm->ang_format == ZYX_EULER) )
   {
     arm->stylus_dir.x = atan2(arm->T[2][1], arm->T[2][2]);
-    arm->stylus_dir.y = atan2(-arm->T[2][0],
-                              sqrt(arm->T[0][0] * arm->T[0][0]
-                                   + arm->T[1][0] * arm->T[1][0]));
+    arm->stylus_dir.y = atan2(-arm->T[2][0], sqrt(arm->T[0][0] * arm->T[0][0] + arm->T[1][0] * arm->T[1][0]));
     arm->stylus_dir.z = atan2(arm->T[1][0], arm->T[0][0]);
   }
   else if ( (arm->ang_format == YXZ_FIXED)

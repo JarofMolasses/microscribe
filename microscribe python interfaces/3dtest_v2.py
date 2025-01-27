@@ -7,6 +7,9 @@
 # TODO: Separate the Arm Serial control from the View class so we can handle it better
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
+import math
+
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -60,12 +63,15 @@ class plotData():
         self.x = []
         self.y = []
         self.z = []
-        self.tipx = []
-        self.tipy = []
-        self.tipz = []
+        self.tipx = 0
+        self.tipy = 0
+        self.tipz = 0
         self.savex = []
         self.savey = []
         self.savez = []
+        self.dirx = 0
+        self.diry = 0
+        self.dirz = 0
     
     def set_num_points(self, num_points):
         self.path_points = num_points
@@ -79,9 +85,16 @@ class plotData():
         self.x = []
         self.y = []
         self.z = []
-        self.tipx = []
-        self.tipy = []
-        self.tipz = []
+        self.tipx = 0
+        self.tipy = 0
+        self.tipz = 0
+    
+    def calculate_base_location(self):
+        # use stylus dir information to calculate endpoint for line showing orientation of stylus
+        # calculate from fixed-frame XYZ rotation data
+        stylus_length = 200
+        pass
+
 
 class Arm():
     def __init__(self):
@@ -135,21 +148,91 @@ class View():
         self.fig = self.plot.figure(figsize=(10, 10))
         self.ax = self.fig.add_subplot(111, projection = "3d")
 
-        self.path = self.ax.scatter([],[],[], color='aquamarine', alpha = 0.3,zorder=2)
-        self.tip = self.ax.scatter([],[],[], color='turquoise', alpha = 1,s=20,zorder=1)
-        self.cloud = self.ax.scatter([],[],[], color='red', alpha = 1,s=20,zorder=1)
+        self.path = self.ax.scatter([],[],[], color='aquamarine', alpha = 0.3)
+        self.tip = self.ax.scatter([],[],[], color='turquoise', alpha = 1,s=20)
+        self.cloud = self.ax.scatter([],[],[], color='red', alpha = 1,s=20)
+        self.stylus = self.ax.scatter([],[],[], color='red', alpha = 0.3)
 
         self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=12)  
-        self.text2 = self.fig.text(0.5,0.95, "XYZ DATA", va='top', ha='center',color='lightgrey',fontsize=32)
+        self.text2 = self.fig.text(0.5,0.97, "XYZ DATA", va='top', ha='center',color='lightgrey',fontsize=32)
         self.text3 = self.fig.text(0, 0.03, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color='lightgrey', fontsize = 12)
+        self.text4 = self.fig.text(0.5,0.85, "TIP ORIENTATION", va='bottom', ha='center', color='lightgrey', fontsize = 32)
         
         self.showPath = True
         self.showcsv = True
+        self.showstylus = True
 
         self.ax.set_xlim3d(-500,500)
         self.ax.set_ylim3d(-500,500)
         self.ax.set_zlim3d(-50, 300)
         set_axes_equal(self.ax)
+
+    def draw_cone(self, ax, x,y,z, dirx,diry,dirz ):
+        # draw a cone with tip at x,y,z and orientation given by dirx,y,z
+        height = 200
+        theta = np.linspace(0, 2*np.pi, 10)
+        r = np.linspace(0, 20, 10)
+        t,R =np.meshgrid(theta, r)
+
+        X = np.array(R*np.cos(t))
+        Y = np.array(R*np.sin(t))
+        Z = np.array(R*height/r.max())
+
+        ihat = [1,0,0]
+        jhat = [0,1,0]
+        khat = [0,0,1]
+
+        x_rot_M = self.rotation_matrix(ihat, dirx)
+        y_rot_M = self.rotation_matrix(jhat, diry)
+        z_rot_M = self.rotation_matrix(khat, dirz)
+
+        Xprime = X
+        Yprime = Y
+        Zprime = Z
+
+        # slice by slice rotation
+        for i in range(len(X[:][1])):
+            XYZprime = np.stack( [X[i][:], Y[i][:], Z[i][:]] , axis = 0)
+            # print('X:')
+            # print(np.shape(X[i][:]))
+            # print(X[i][:])
+            # print('XYZ concatenated:')
+            # print(XYZprime)
+            Xprime[i][:] = np.dot(x_rot_M[0][:],XYZprime)
+            Yprime[i][:] = np.dot(x_rot_M[1][:],XYZprime)
+            Zprime[i][:] = np.dot(x_rot_M[2][:],XYZprime)
+
+        for i in range(len(X[:][1])):
+            XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
+            Xprime[i][:] = np.dot(y_rot_M[0][:],XYZprime)
+            Yprime[i][:] = np.dot(y_rot_M[1][:],XYZprime)
+            Zprime[i][:] = np.dot(y_rot_M[2][:],XYZprime)
+
+        for i in range(len(X[:][1])):
+            XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
+            Xprime[i][:] = np.dot(z_rot_M[0][:],XYZprime)
+            Yprime[i][:] = np.dot(z_rot_M[1][:],XYZprime)
+            Zprime[i][:] = np.dot(z_rot_M[2][:],XYZprime)
+        
+        X = Xprime
+        Y = Yprime
+        Z = Zprime
+
+        graph = ax.plot_surface(X+x, Y+y, Z+z,alpha=0.2, cmap=cm.GnBu)
+        return graph
+        pass
+
+    def rotation_matrix(self, axis, theta):
+        axis = np.asarray(axis)
+        axis = axis / math.sqrt(np.dot(axis, axis))
+        a = math.cos(theta / 2.0)
+        b, c, d = -axis * math.sin(theta / 2.0)
+        aa, bb, cc, dd = a * a, b * b, c * c, d * d
+        bc, ad, ac, ab, bd, cd = b * c, a * d, a * c, a * b, b * d, c * d
+        return np.array([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
+                        [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
+                        [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
+
 
     def init_plot(self):
         #print(">Init plot")
@@ -193,6 +276,9 @@ class View():
 
     def toggleCSV(self):
         self.showcsv = not self.showcsv
+    
+    def togglestylus(self):
+        self.showstylus = not self.showstylus
 
     def update_lines(self, i=1, path=True, csv=True):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
@@ -215,24 +301,29 @@ class View():
                         dx = float(xyz[1])
                         dy = float(xyz[2])
                         dz = float(xyz[3])    
+                        dirx = float(xyz[4]) 
+                        diry = float(xyz[5])
+                        dirz = float(xyz[6])
+                
                         self.text1.set_text("{:d} points in buffer".format(len(self.data.x)))  # for debugging
                         self.text2.set_text("(X,Y,Z): ({:.2f}, {:.2f}, {:.2f})".format(dx, dy, dz))  # for debugging
                         self.text3.set_text("{:d} points in point cloud".format(len(self.data.savex)))
+                        self.text4.set_text("(Roll, Pitch, Yaw): ({:.2f}, {:.2f}, {:.2f})".format(dirx, diry, dirz))  # for debugging
                         packet_received = True
                         self.data.x.append(dx)
                         self.data.y.append(dy)
                         self.data.z.append(dz)
-                        self.data.tipx.append(dx)
-                        self.data.tipy.append(dy)
-                        self.data.tipz.append(dz)
+                        self.data.tipx = dx
+                        self.data.tipy = dy
+                        self.data.tipz = dz
+                        self.data.dirx = dirx*np.pi/180
+                        self.data.diry = diry*np.pi/180
+                        self.data.dirz = dirz*np.pi/180
+
                         if len(self.data.x) > self.data.path_points:
                             self.data.x.pop(0)
                             self.data.y.pop(0)
                             self.data.z.pop(0)
-                        if len(self.data.tipx) > self.data.tip_points:      # tip current location. just to have it, not plotting
-                             self.data.tipx.pop(0)
-                             self.data.tipy.pop(0)
-                             self.data.tipz.pop(0)
 
                         #  You can update the plot with new data only
                         # graph._offsets3d = (x, y, z)
@@ -244,8 +335,10 @@ class View():
                             self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color='aquamarine', alpha = 0.3)
                         if(self.showcsv is True):
                             self.cloud = self.ax.scatter(self.data.savex, self.data.savey, self.data.savez, color='red', alpha=1, s=20)
+                        if(self.showstylus is True):
+                            self.stylus = self.draw_cone(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz)
 
-                        return self.path,self.tip,self.cloud
+                        return self.path,self.tip,self.cloud,self.stylus
                     else:
                         pass
                 except UnicodeDecodeError:
@@ -283,9 +376,10 @@ class GUI():
         view.add_command(label = 'Reset all data', command = self.reset_plot)
         view.add_command(label = 'Reset CSV data', command = self.reset_csv)
         view.add_command(label = 'Reset viewport', command = self.reset_window)
-        view.add_checkbutton(label = 'Freeze', command = self.render_toggle)
+        view.add_checkbutton(label = 'Freeze', command = self.toggle_render)
         view.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         view.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
+        view.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
 
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
         canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
@@ -318,11 +412,11 @@ class GUI():
 
     def render(self):
         if(self.update):
-            self.view.update_lines()            # update plot
-            self.canvas.draw()                  # send updates to tkinder window. Without this the canvas doesn't update
+            self.view.update_lines()                              # update fig,ax
+            self.canvas.draw()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I interact with the window
         self._renderjob = self.root.after(25, self.render)        # schedule updates with .after
     
-    def render_toggle(self):
+    def toggle_render(self):
         self.update = not self.update
 
     def reset_plot(self):
@@ -337,14 +431,20 @@ class GUI():
         # self.view.data.toggle_path()
         self.view.togglePath()
         self.view.init_plot()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_lines()            # update fig, ax
+        self.canvas.draw()                  # send updated fig, ax to tkinder window. otherwise the update will not happen until I interact with the window
     
     def toggle_csv(self):
         self.view.toggleCSV()
         self.view.init_plot()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_lines()         
+        self.canvas.draw()     
+
+    def toggle_stylus(self):
+        self.view.togglestylus()
+        self.view.init_plot()
+        self.view.update_lines()
+        self.canvas.draw()
 
     def reset_window(self):
         self.view.reset_axis_limits()
@@ -354,14 +454,14 @@ class GUI():
     def reset_csv(self):
         self.view.data.clear_csv_data()
         self.view.init_plot()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_lines()            
+        self.canvas.draw()              
 
     def save_cloud_point(self, e):
         #print(">Saved point to csv")
-        self.view.data.savex.append(self.view.data.tipx[0])
-        self.view.data.savey.append(self.view.data.tipy[0])
-        self.view.data.savez.append(self.view.data.tipz[0])
+        self.view.data.savex.append(self.view.data.tipx)
+        self.view.data.savey.append(self.view.data.tipy)
+        self.view.data.savez.append(self.view.data.tipz)
         if(len(self.view.data.savex)>self.view.data.csv_points):
             self.view.data.savex.pop()
             self.view.data.savey.pop()

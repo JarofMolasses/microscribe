@@ -98,7 +98,7 @@ void loop() {
     break;
   }
 
-  delay(100); // rudimentary spam limiter. Use timer interrupts for serious applications
+  delay(50); // rudimentary spam limiter. Use timer interrupts for serious applications
 }
 
 void printXYZ(arm_rec arm)
