@@ -93,12 +93,11 @@ void loop() {
   {
     case PRINT_CONT:
       printXYZ(arm);
+      delay(70); // rudimentary spam limiter. Use timer interrupts for serious applications
     break;
     default:
     break;
   }
-
-  delay(50); // rudimentary spam limiter. Use timer interrupts for serious applications
 }
 
 void printXYZ(arm_rec arm)
