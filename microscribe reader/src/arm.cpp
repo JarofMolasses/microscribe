@@ -71,7 +71,7 @@ void arm_init(arm_rec *arm)
 
   arm->len_units = MM; // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
   arm->ang_units = DEGREES;
-  arm->ang_format = XYZ_FIXED;	/* same as ZYX_EULER */
+  arm->ang_format = XYZ_FIXED;	
 
   arm->timer_report = 0;
   arm->anlg_reports = 0;

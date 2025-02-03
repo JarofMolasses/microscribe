@@ -214,6 +214,9 @@ hci_result hci_connect(hci_rec *hci)
  *    auto-synch process.  This requires that the HCI was either
  *    just powered-on or has just been given an END_SESSION command,
  *    such as by a previous call to hci_end().
+ * 
+ * This is supposed to autosynch the baud rate.
+ * Well, but like. No it doesn't. This only checks for the right response. You still have to set the correct baud.
  */
 hci_result hci_autosynch(hci_rec *hci)
 {

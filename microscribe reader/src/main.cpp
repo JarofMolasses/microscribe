@@ -38,7 +38,7 @@ void setup() {
   delay(1000);
 
   // Home arm at bootup position
-  result = arm_home_pos(&arm);
+  //result = arm_home_pos(&arm);
   Serial.println("READY");
 }
 
@@ -64,7 +64,7 @@ void loop() {
         Serial.println("Discontinuous mode");
         break;
       case 'q':
-      // query mode
+      // query mode. Software flow control
         printMode = PRINT_QUERY;
         Serial.println("Query mode");
         break;
@@ -79,6 +79,13 @@ void loop() {
           printXYZ(arm);
         }
         break;
+      case 'x':
+        arm_disconnect(&arm);
+        Serial.println("DISCONNECTED");
+        break;
+      case 'r':
+        arm_connect(&arm, port, baud);
+        Serial.println("READY");
       default:
         break;
     }
