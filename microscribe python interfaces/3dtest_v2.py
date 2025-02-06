@@ -1,5 +1,5 @@
 # TODO: 
-# Reformat the whole thing 
+# Robustness: serial port selection, communication timeouts, error handling
 # Panning the plot is usable in Axes3D by default. Zooming with the right click sucks and should be changed to scroll.
 # Create proper unit tests for functions
 # TODO but later:
@@ -38,12 +38,8 @@ def set_axes_equal(ax):
     """
 
     x_limits = ax.get_xlim3d()
-    print("X lim")
-    print("x_limits")
     y_limits = ax.get_ylim3d()
     z_limits = ax.get_zlim()
-    print("Z lim")
-    print(z_limits)
 
     x_range = abs(x_limits[1] - x_limits[0])
     x_middle = np.mean(x_limits)
@@ -59,17 +55,6 @@ def set_axes_equal(ax):
     ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
-
-# generate random point cloud to test graphics rendering.
-def testCSVplot(plot):
-        for i in range(plot.csv_points):
-            randx = random.randint(-500,500)
-            randy = random.randint(-500,500)
-            randz = random.randint(-500,500)
-            print("Generated random coordinate "+ str(i))
-            plot.savex.append(randx)
-            plot.savey.append(randy)
-            plot.savez.append(randz)
 
 # implementing point to reference plane or point to point measurement
 # TODO later: evaluate flatness, parallelism, roundness?
@@ -252,14 +237,26 @@ class plotData():
         self.tipx = [0]
         self.tipy = [0]
         self.tipz = [0]
+    
+    def testCSV(self):
+        for i in range(self.csv_points):
+            randx = random.randint(-500,500)
+            randy = random.randint(-500,500)
+            randz = random.randint(-500,500)
+            print("Generated random coordinate "+ str(i))
+            self.savex.append(randx)
+            self.savey.append(randy)
+            self.savez.append(randz)
+        pass
 
 class Arm():
     def __init__(self):
-        self.ser = serial.Serial('COM8',57600, timeout=5)
+        self.ser = serial.Serial('COM8',57600, timeout=5)       # this should not be hardcoded, obviously
         self.initialized = False
 
     def open_source(self):
         if(not self.ser.is_open):
+            print(">Opening serial port")
             self.ser.open()
             self.ser.flushInput()
             time.sleep(2)
@@ -267,6 +264,11 @@ class Arm():
     def home_arm(self):
         print(">Home arm")
         self.ser.write('h'.encode('utf-8'))
+        self.wait_for_response()
+    
+    def send_command(self, command : int):
+        print(">Sent command: {}".format(command))
+        self.ser.write(command.encode('utf-8'))
         self.wait_for_response()
 
     # wait for handshaking at bootup
@@ -289,6 +291,19 @@ class Arm():
                 print(">Got a response:")
                 print(serial_rx)
                 break
+        
+        
+# # generate random point cloud to test graphics rendering.
+# def testCSVplot(plot : plotData):
+#     for i in range(plot.csv_points):
+#         randx = random.randint(-500,500)
+#         randy = random.randint(-500,500)
+#         randz = random.randint(-500,500)
+#         print("Generated random coordinate "+ str(i))
+#         plot.savex.append(randx)
+#         plot.savey.append(randy)
+#         plot.savez.append(randz)
+
 
 class View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
@@ -988,19 +1003,13 @@ class App():
 if __name__ == "__main__":
     app = App()
 
-    if(not app.view.arm.ser.is_open):
-        print(">Opening serial port")
-        app.view.arm.ser.open()
-        app.view.arm.ser.flushInput()
-        time.sleep(2)
-
+    app.view.arm.open_source()
     app.view.arm.wait_for_init()
     print(">Setting datastream mode")
-    app.view.arm.ser.write('q'.encode('utf-8'))       # turn on query-based reporting
-    app.view.arm.wait_for_response()
+    app.view.arm.send_command('q')
 
     #app.gui.render()           # use custom render loop
     app.gui.render_ani()        # use built-in animation scheduler. 
 
-    #testCSVplot(app.view.data)
+    #app.view.data.testCSV()
     app.gui.root.mainloop()
