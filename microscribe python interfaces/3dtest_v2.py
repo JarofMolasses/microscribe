@@ -27,34 +27,31 @@ import timeit
 import serial
 
 from matplotlib import cm
+
 # see: https://stackoverflow.com/questions/13685386/how-to-set-the-equal-aspect-ratio-for-all-axes-x-y-z
-def set_axes_equal(ax):
-    """
-    Make axes of 3D plot have equal scale so that spheres appear as spheres,
-    cubes as cubes, etc.
-
-    Input
-      ax: a matplotlib axis, e.g., as output from plt.gca().
-    """
-
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim()
-
-    x_range = abs(x_limits[1] - x_limits[0])
-    x_middle = np.mean(x_limits)
-    y_range = abs(y_limits[1] - y_limits[0])
-    y_middle = np.mean(y_limits)
-    z_range = abs(z_limits[1] - z_limits[0])
-    z_middle = np.mean(z_limits)
-
-    # The plot bounding box is a sphere in the sense of the infinity
-    # norm, hence I call half the max range the plot radius.
-    plot_radius = 0.5*max([x_range, y_range, z_range])
-
-    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
-    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
-    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+# May be no longer needed as Axes3D seems to have working aspect equal function 
+# def set_axes_equal(ax):
+#     """
+#     Make axes of 3D plot have equal scale so that spheres appear as spheres,
+#     cubes as cubes, etc.
+#     Input
+#       ax: a matplotlib axis, e.g., as output from plt.gca().
+#     """
+#     x_limits = ax.get_xlim3d()
+#     y_limits = ax.get_ylim3d()
+#     z_limits = ax.get_zlim()
+#     x_range = abs(x_limits[1] - x_limits[0])
+#     x_middle = np.mean(x_limits)
+#     y_range = abs(y_limits[1] - y_limits[0])
+#     y_middle = np.mean(y_limits)
+#     z_range = abs(z_limits[1] - z_limits[0])
+#     z_middle = np.mean(z_limits)
+#     # The plot bounding box is a sphere in the sense of the infinity
+#     # norm, hence I call half the max range the plot radius.
+#     plot_radius = 0.5*max([x_range, y_range, z_range])
+#     ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+#     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+#     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
 # implementing point to reference plane or point to point measurement
 # TODO later: evaluate flatness, parallelism, roundness?
@@ -291,18 +288,6 @@ class Arm():
                 print(">Got a response:")
                 print(serial_rx)
                 break
-        
-        
-# # generate random point cloud to test graphics rendering.
-# def testCSVplot(plot : plotData):
-#     for i in range(plot.csv_points):
-#         randx = random.randint(-500,500)
-#         randy = random.randint(-500,500)
-#         randz = random.randint(-500,500)
-#         print("Generated random coordinate "+ str(i))
-#         plot.savex.append(randx)
-#         plot.savey.append(randy)
-#         plot.savez.append(randz)
 
 
 class View():
@@ -629,8 +614,8 @@ class View():
         self.ax.view_init()
         self.ax.set_xlim3d(-500,500)
         self.ax.set_ylim3d(-500,500)
-        self.ax.set_zlim3d(-50, 300)
-        set_axes_equal(self.ax)
+        self.ax.set_zlim3d(-100, 500)
+        #set_axes_equal(self.ax)
 
         curxlim3d = self.ax.get_xlim()
         curylim3d = self.ax.get_ylim()
@@ -1011,5 +996,5 @@ if __name__ == "__main__":
     #app.gui.render()           # use custom render loop
     app.gui.render_ani()        # use built-in animation scheduler. 
 
-    #app.view.data.testCSV()
+    app.view.data.testCSV()
     app.gui.root.mainloop()
