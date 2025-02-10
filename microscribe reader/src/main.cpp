@@ -3,6 +3,9 @@
 #include "arm.h"
 #include "drive.h"
 
+#define ID_PHRASE "MICROSCRIBE SERIAL INTERFACE"
+//#define AUTOCONNECT       // define this if you want the interface to automatically connect on startup without needing to send connect command
+
 // The order of the includes is important. For reasons I don't understand
 // Arduino quirk: if using onboard USB COM port, DTR signal sent by the terminal software trips reset 
 // If you want to open and close the terminal software at will, 
@@ -10,12 +13,18 @@
 //  2.use an external USB-TTL on the RX/TX lines directly to implement USB 
 
 arm_rec arm;
-long baud = 19200L;   // <<<<<<<<< HCI has an autosynch function, but it seems to only work with 19200
+long baud = 19200L;   // <<<<<<<<< HCI has an "autosynch" function, but it seems to only work with 19200
 int port = 1;
 byte buffer[1]; 
 
 void printXYZ(arm_rec arm);
 void home(arm_rec arm);
+
+enum ConnectionState{
+  FALSE = 0x0,
+  TRUE
+};
+int arm_connected = FALSE;
 
 typedef enum PrintMode{
   PRINT_CONT,
@@ -23,23 +32,26 @@ typedef enum PrintMode{
   PRINT_NONE,
   PRINT_QUERY
 } printmode_t;
-
 printmode_t printMode = PRINT_QUERY;
 arm_result result;
 
 void setup() {
   Serial.begin(57600);
-  delay(1000);
-  // Initialize and connect Microscribe arm
+  pinMode(13, OUTPUT);
+  digitalWrite(13, arm_connected);
 
+  // Initialize and connect Microscribe arm
   arm_init(&arm);
   arm_install_simple(&arm);
+
+  #ifdef AUTOCONNECT
   result = arm_connect(&arm, port, baud);
+  arm_connected = TRUE;
   delay(1000);
 
-  // Home arm at bootup position
-  //result = arm_home_pos(&arm);
   Serial.println("READY");
+  digitalWrite(13, arm_connected);
+  #endif
 }
 
 void loop() {
@@ -49,24 +61,28 @@ void loop() {
     Serial.readBytes(buffer, 1);
     switch ((int)buffer[0])
     {
+      case 'i':
+        // identify machine 
+        Serial.println(ID_PHRASE);
+        break;
       case 'c':
         // default continuous mode, report XYZ constantly
         printMode = PRINT_CONT;
-        Serial.println("Continuous mode");
+        Serial.println("CONTINUOUS MODE");
         break;
       case 'n':
         printMode = PRINT_NONE;
-        Serial.println("Printing off");
+        Serial.println("PRINTING OFF");
         break;
       case 'd':
       // discontinuous mode
         printMode = PRINT_DISCONT;
-        Serial.println("Discontinuous mode");
+        Serial.println("DISCONTINUOUS MODE");
         break;
       case 'q':
       // query mode. Software flow control
         printMode = PRINT_QUERY;
-        Serial.println("Query mode");
+        Serial.println("QUERY MODE");
         break;
       case 'h':
       // home 
@@ -82,18 +98,21 @@ void loop() {
       case 'x':
         arm_disconnect(&arm);
         Serial.println("DISCONNECTED");
+        arm_connected = FALSE;      // Consider: what if this function fails? This is pretty crude, we should rather just track whether the serial port assigned to the arm is open.
+        digitalWrite(13, arm_connected);
         break;
       case 'r':
         arm_connect(&arm, port, baud);
         Serial.println("READY");
+        arm_connected = TRUE;
+        digitalWrite(13, arm_connected);
       default:
         break;
     }
   }
 
-
   // get update from Microscribe
-  result = arm_stylus_6DOF_update(&arm);
+  if(arm_connected == TRUE) result = arm_stylus_6DOF_update(&arm);
    
 	// print coordinates to Serial Monitor
   switch(printMode)
@@ -127,5 +146,5 @@ void printXYZ(arm_rec arm)
 void home(arm_rec arm)
 {
   arm_home_pos(&arm);
-  Serial.println("Home arm position");
+  Serial.println("RESET HOME LOCATION");
 }

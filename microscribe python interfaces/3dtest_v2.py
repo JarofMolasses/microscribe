@@ -1,6 +1,8 @@
 # TODO: 
+# replace the hardcoded serial port with proper search and identification. At minimum show dropdown with all available COM ports. Best is autoscan for a valid interface - this may take an additional handshaking routine 
 # Robustness: serial port selection, communication timeouts, error handling
 # Panning the plot is usable in Axes3D by default. Zooming with the right click sucks and should be changed to scroll.
+# Better connect/disconnect functionality
 # Create proper unit tests for functions
 # TODO but later:
 # Implement background computation in separate thread (e.g. Serial, matrix manipulation), and/or use pyQT for more powerful plotting and UI
@@ -26,7 +28,11 @@ import time
 import timeit
 import serial
 
+import sys
+import glob
+
 from matplotlib import cm
+
 
 # see: https://stackoverflow.com/questions/13685386/how-to-set-the-equal-aspect-ratio-for-all-axes-x-y-z
 # May be no longer needed as Axes3D seems to have working aspect equal function 
@@ -247,54 +253,141 @@ class plotData():
         pass
 
 class Arm():
-    def __init__(self):
-        self.ser = serial.Serial('COM8',57600, timeout=5)       # this should not be hardcoded, obviously
+    def __init__(self, portname = None):
+        try:
+            self.ser = serial.Serial(portname,57600, timeout=5)       # this should not be hardcoded, obviously
+        except:
+            pass
         self.initialized = False
+        self.portname = portname
 
     def open_source(self):
-        if(not self.ser.is_open):
-            print(">Opening serial port")
-            self.ser.open()
-            self.ser.flushInput()
-            time.sleep(2)
+        if(self.ser.is_open):
+            self.ser.close()
+        print(">Attempting to open serial port...")
+        self.ser.open()
+        # self.ser.reset_output_buffer()
+        # self.ser.reset_input_buffer()
+        time.sleep(1)                       # this is apparently necessary to let the interface come up
+        print(">Serial port opened")
 
     def home_arm(self):
         print(">Home arm")
         self.ser.write('h'.encode('utf-8'))
         self.wait_for_response()
     
-    def send_command(self, command : int):
-        print(">Sent command: {}".format(command))
+    def send_query(self, command : int):
+        print(">Sent query: {}".format(command))
         self.ser.write(command.encode('utf-8'))
         self.wait_for_response()
 
-    # wait for handshaking at bootup
+    def send_command(self, command : int):
+        print(">Sent command: {}".format(command))
+        self.ser.write(command.encode('utf-8'))
+
+    # Connect and wait for handshaking between arduino and microscribe
+    # must come after open()
     def wait_for_init(self):
-        print(">Waiting for hardware initialization...")
-        while(self.initialized is False):        # add a timeout
-            serial_rx= self.ser.readline().decode('utf-8').rstrip('\n')
-            if(not serial_rx.isspace()):
-                print(serial_rx)
-            if "READY" in serial_rx:
-                print(">Arm initialized")
-                self.initialized = True
-                break
+        timeout = 3.0
+        time_start = timeit.default_timer()
+        if(self.ser.is_open):
+            print(">Waiting for hardware initialization...")
+            self.send_command('r')
+            while(self.initialized is False and (timeit.default_timer()-time_start < timeout)):        # add a timeout
+                serial_rx= self.ser.readline().decode('utf-8').rstrip('\n')
+                if(not serial_rx.isspace()):
+                    print(serial_rx)
+                if "READY" in serial_rx:
+                    print(">Arm initialized")
+                    self.initialized = True
+                    return True
+            print("Timed out waiting for init")
+            return False
+            
 
     def wait_for_response(self):
+        timeout = 3.0
+        time_start = timeit.default_timer()
         print(">Waiting for response")
-        while(True):        # add a timeout
+        while(timeit.default_timer() - time_start < timeout):        # add a timeout
             serial_rx= self.ser.readline().decode('utf-8').rstrip()
             if len(serial_rx)>0:
                 print(">Got a response:")
                 print(serial_rx)
-                break
+                return
+        print(">Timed out waiting for response")
 
+    # see : https://stackoverflow.com/a/14224477
+    def serial_ports():
+        """ Lists serial port names
+
+            :raises EnvironmentError:
+                On unsupported or unknown platforms
+            :returns:
+                A list of the serial ports available on the system
+        """
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (256 - i) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            # this excludes your current terminal "/dev/tty"
+            ports = glob.glob('/dev/tty[A-Za-z]*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.*')
+        else:
+            raise EnvironmentError('Unsupported platform')
+
+        result = []
+        for port in ports:
+            try:
+                s = serial.Serial(port, baudrate = 57600)
+                result.append(port)
+                s.close()
+            except (OSError, serial.SerialException):
+                pass
+        
+        return result
+
+    # From a list of available COM ports, identifies the first Microscribe interface 
+    # Assumes only one is connected.
+    def find_microscribe(listports):
+        target = None
+        for port in listports:
+            s = serial.Serial(port, baudrate = 57600)
+            print(">Checking for Microscribe interface device on " + port)
+            if(s.is_open): 
+                s.close()
+            s.open()
+            # s.reset_output_buffer()
+            # s.reset_input_buffer()
+            time.sleep(1)                       # this is necessary to allow the interface to come up
+            s.write('i'.encode('utf-8'))
+            timeout = 0.5
+            time_start = timeit.default_timer()
+            print(">Waiting for ID")
+            while(timeit.default_timer() - time_start < timeout):       
+                if(s.in_waiting):
+                    try:
+                        response = s.readline().decode('utf-8').rstrip()
+                        print(">ID:")
+                        print(response)
+                        if("microscribe" in response.lower()):
+                            target = port 
+                            print(">Confirmed Microscribe interface on " + port)
+                            return target
+                    except:
+                        pass
+            print(">Timed out waiting for response")
+
+        return target
+            
 
 class View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
-        if arm is None:
-            arm = Arm()
-        self.arm = arm          # TODO: get the Arm out of the View class, View should just act on the data. Use semaphores to write/read the lists
+        self.arm_attached = False
+
+        # if arm is None:
+        #     arm = Arm()
+        self.arm = Arm()          # TODO: make arm "detachable", that is, if there is no arm available make it possible to generate an empty View() so that an arm can be attached later.
 
         if plotdata is None:
             plotdata = plotData()
@@ -342,6 +435,11 @@ class View():
         self.current_frame_time = timeit.default_timer()
         self.current_frame_avg_queue = [self.current_frame_time]
         self.start = timeit.default_timer()
+
+    def attach_arm(self, arm):
+        self.arm = arm
+        self.arm_attached = True
+        pass
 
     def xy(self):
         self.ax.view_init(elev=90, azim=-90)
@@ -639,7 +737,7 @@ class View():
     def togglestylus(self):
         self.showstylus = not self.showstylus
 
-    def update_lines(self, i=1, path=True, csv=True):
+    def update_lines(self, i = 1):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
 
         self.current_frame_time = timeit.default_timer() - self.start
@@ -651,113 +749,111 @@ class View():
         # use this block for clearing and redrawing.
         # clearing and redrawing is super SLOW, mind
         self.frame_reset()
-        self.ax.auto_scale_xyz
 
-
-        packet_received = False
-        self.arm.ser.write(('>').encode('utf-8'))
-        while(not packet_received):
+        if(self.arm_attached == True):
+            packet_received = False
             try:
-                serial_rx = self.arm.ser.readline()
-                try:
-                    data = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
-                    if(data.startswith("XYZ")):
-                        xyz = data.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
-                        #print(xyz)
-                        dx = float(xyz[1])
-                        dy = float(xyz[2])
-                        dz = float(xyz[3])    
-                        dirx = float(xyz[4]) 
-                        diry = float(xyz[5])
-                        dirz = float(xyz[6])
-                        packet_received = True
+                self.arm.ser.write(('>').encode('utf-8'))
+                while(not packet_received and self.arm.ser.in_waiting):
+                    try:
+                        serial_rx = self.arm.ser.readline()
+                        try:
+                            data = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
+                            if(data.startswith("XYZ")):
+                                xyz = data.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
+                                #print(xyz)
+                                dx = float(xyz[1])
+                                dy = float(xyz[2])
+                                dz = float(xyz[3])    
+                                dirx = float(xyz[4]) 
+                                diry = float(xyz[5])
+                                dirz = float(xyz[6])
+                                packet_received = True
 
-                        self.data.x.append(dx)
-                        self.data.y.append(dy)
-                        self.data.z.append(dz)
-                        self.data.tipx.append(dx)
-                        self.data.tipy.append(dy)
-                        self.data.tipz.append(dz)
-                        self.data.dirx = dirx*np.pi/180
-                        self.data.diry = diry*np.pi/180
-                        self.data.dirz = dirz*np.pi/180
+                                self.data.x.append(dx)
+                                self.data.y.append(dy)
+                                self.data.z.append(dz)
+                                self.data.tipx.append(dx)
+                                self.data.tipy.append(dy)
+                                self.data.tipz.append(dz)
+                                self.data.dirx = dirx*np.pi/180
+                                self.data.diry = diry*np.pi/180
+                                self.data.dirz = dirz*np.pi/180
 
-                        if len(self.data.x) > self.data.path_points:        # remove the oldest point to limit list length
-                            self.data.x.pop(0)
-                            self.data.y.pop(0)
-                            self.data.z.pop(0)
+                                if len(self.data.x) > self.data.path_points:        # remove the oldest point to limit list length
+                                    self.data.x.pop(0)
+                                    self.data.y.pop(0)
+                                    self.data.z.pop(0)
 
-                        if len(self.data.tipx) > self.data.tip_points:        # remove the oldest point to limit list length
-                            self.data.tipx.pop(0)
-                            self.data.tipy.pop(0)
-                            self.data.tipz.pop(0)
+                                if len(self.data.tipx) > self.data.tip_points:        # remove the oldest point to limit list length
+                                    self.data.tipx.pop(0)
+                                    self.data.tipy.pop(0)
+                                    self.data.tipz.pop(0)
 
-                        # Update all artists and text
-                        # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
-                        self.tip = self.ax.plot(dx,dy,dz,color='aquamarine', marker='.', alpha = 1,linestyle="",markersize=2)
-                        
-                        # The text is rather clumsily rendered.Takes a lot of lines!
-                        if(self.showPath is True):
-                            self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color='aquamarine', alpha = 0.2, linewidth=1)
-                        if(self.showcsv is True):
-                            self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color='red', marker = '.', alpha=1, markersize=3)
-                        if(self.showstylus is True):
-                            self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz,'mediumaquamarine')
+                                # Update all artists and text
+                                # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
+                                self.tip = self.ax.plot(dx,dy,dz,color='aquamarine', marker='.', alpha = 1,linestyle="",markersize=2)
+                                
+                                # The text is rather clumsily rendered.Takes a lot of lines!
+                                if(self.showPath is True):
+                                    self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color='aquamarine', alpha = 0.2, linewidth=1)
+                                if(self.showcsv is True):
+                                    self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color='red', marker = '.', alpha=1, markersize=3)
+                                if(self.showstylus is True):
+                                    self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz,'mediumaquamarine')
 
-                        if(self.point2plane.plane_ready):
-                            self.plane = self.draw_ref_plane()
-                            if(self.point2plane.P_plane_loaded and self.showp2plane):
-                                self.draw_point_plane_dist('orange')
-                                self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
+                                if(self.point2plane.plane_ready):
+                                    self.plane = self.draw_ref_plane()
+                                    if(self.point2plane.P_plane_loaded and self.showp2plane):
+                                        self.draw_point_plane_dist('orange')
+                                        self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
+                                    else:
+                                        self.textpointplane.set_text("")
+                                    self.text7.set_text("")
+                                else:
+                                    self.textpointplane.set_text("")
+                                    self.text7.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
+
+                                if(self.point2plane.P_ref_loaded and self.showp2p):
+                                    self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
+                                    if(self.point2plane.P_point_loaded):
+                                        self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
+                                        if(self.showp2p):
+                                            self.draw_point_point_dist('salmon')
+                                            self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
+                                    else:
+                                        self.textpointpoint.set_text("")
+                                        self.textpoint2.set_text("")
+                                else:
+                                    self.textpoint1.set_text("")
+                                    self.textpoint2.set_text("")
+                                    self.textpointpoint.set_text("")
+                                
+
+                                self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
+                                self.text2.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
+                                self.text3.set_text("{:d} points in point cloud".format(len(self.data.savex)))
+                                #self.text4.set_text("($\\phi$, $\\theta$, $\\psi$): ({0:7.2f},{1:7.2f},{2:7.2f}) deg".format(dirx, diry, dirz)) 
+                                self.text5.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
                             else:
-                                self.textpointplane.set_text("")
-                            self.text7.set_text("")
-                        else:
-                            self.textpointplane.set_text("")
-                            self.text7.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
-
-                        if(self.point2plane.P_ref_loaded and self.showp2p):
-                            self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
-                            if(self.point2plane.P_point_loaded):
-                                self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
-                                if(self.showp2p):
-                                    self.draw_point_point_dist('salmon')
-                                    self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
-                            else:
-                                self.textpointpoint.set_text("")
-                                self.textpoint2.set_text("")
-                        else:
-                            self.textpoint1.set_text("")
-                            self.textpoint2.set_text("")
-                            self.textpointpoint.set_text("")
-                        
-
-                        self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
-                        self.text2.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
-                        self.text3.set_text("{:d} points in point cloud".format(len(self.data.savex)))
-                        #self.text4.set_text("($\\phi$, $\\theta$, $\\psi$): ({0:7.2f},{1:7.2f},{2:7.2f}) deg".format(dirx, diry, dirz)) 
-                        self.text5.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
-                    else:
-                        pass
-                except UnicodeDecodeError:
-                    pass
-            except serial.SerialException as e:
-            #There is no new data from serial port
-                break
+                                pass
+                        except UnicodeDecodeError:
+                            pass
+                    except serial.SerialException:     # couldn't read - lost connection
+                        self.arm_attached = False
+                        print(">Lost connection. Restart program or scan again")
+                        break
+            except:                                         # couldn't write - lost connection
+                self.arm_attached = False
+                print(">Lost connection. Restart program or scan again")
+                pass
 
 class GUI():
-    def __init__(self, view = None, arm = None):
-
-        if view is None:
-            view = View()
-        self.view = view
-
+    def __init__(self, view = None):
+        self.title = "Microscribe 3D demo"
         root = tk.Tk()
-        root.title("Microscribe 3D demo")
+        root.title(self.title + " (no device connected)")
         root.minsize(800,800)
-        
-        self.view.init_plot()
-        self.view.reset_axis_limits()
 
         menubar = Menu(root)
         filemenu = Menu(menubar, tearoff=0)
@@ -766,21 +862,23 @@ class GUI():
         # microscribe options
         msmenu = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label='Microscribe options', menu = msmenu)
+        msmenu.add_command(label = 'Auto-scan', command = self.auto_scan)
         msmenu.add_command(label = 'Home', command = self.home_arm)
+        
         # view options
-        view = Menu(menubar, tearoff = 0)
-        menubar.add_cascade(label = 'View options', menu = view)
-        view.add_command(label = 'Reset all data', command = self.reset_plot)
-        view.add_command(label = 'Reset CSV data', command = self.reset_csv)
-        view.add_command(label = 'Reset viewport', command = self.reset_window)
-        view.add_checkbutton(label = 'Freeze', command = self.toggle_render)
-        view.add_checkbutton(label = 'Hide path', command = self.toggle_path)
-        view.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
-        view.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
+        viewmenu = Menu(menubar, tearoff = 0)
+        menubar.add_cascade(label = 'View options', menu = viewmenu)
+        viewmenu.add_command(label = 'Reset all data', command = self.reset_plot)
+        viewmenu.add_command(label = 'Reset CSV data', command = self.reset_csv)
+        viewmenu.add_command(label = 'Reset viewport', command = self.reset_window)
+        viewmenu.add_checkbutton(label = 'Freeze', command = self.toggle_render)
+        viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
+        viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
+        viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
 
         # measurement options
         # I don't understand why the checkbutton doesn't respond to programmed state!!
-        # I want it to be default on!!!!!!!!
+        # I want it to be default on!!!
         meas = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label = 'Measurement options', menu = meas)
         measModes = Menu(meas, tearoff = 0)
@@ -791,6 +889,12 @@ class GUI():
         measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1, command = self.toggle_p2plane)
         measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, command = self.toggle_p2p)
 
+        if view is None:
+            view = View()
+        self.view = view
+
+        self.view.init_plot()
+        self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -806,6 +910,9 @@ class GUI():
         self.update = True
                 
         def close_window():
+            if(self.view.arm_attached):
+                self.view.arm.send_command('x')
+                self.view.arm.ser.close()
             self.root.quit() # this doesn't seem to normally run and is needed to close properly
             self.root.destroy()
             return
@@ -815,16 +922,51 @@ class GUI():
         root.bind("<space>", self.save_cloud_point)
         root.bind("<Key>", self.key_handler)
 
-        self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    
-        self.ani.pause()
+        # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
+        # self.ani.pause()
+
+    def auto_scan(self):
+        # Search all COM ports for a response
+        print(">Scanning serial ports:")
+        print(Arm.serial_ports())
+
+        # if something found, initialize it on the microscribe side, then attach it to the plot so the plot can receive data later
+        portname = ''
+        try:
+            portnames = Arm.serial_ports()
+            portname = Arm.find_microscribe(portnames)
+            arm = Arm(portname)
+            arm.open_source()
+            result = arm.wait_for_init()
+            if(result == True):
+                self.view.attach_arm(arm) 
+                print(">Arm attached successfully")
+            else:
+                print(">Microscribe timed out.")
+        except (IndexError, serial.SerialException):
+            print(">Auto-scan unsuccessful.")
+            # exit()
+            pass
+
+        # if arm was attached, then we can start plotting. If not, standby with empty plot.
+        if(app.view.arm_attached == True):
+            arm.ser.reset_input_buffer()
+            arm.ser.reset_output_buffer()
+            print(">Setting datastream mode")
+            arm.send_query('q')
+            self.view.arm.ser.reset_input_buffer()
+            self.view.arm.ser.reset_output_buffer()
+            self.root.title(self.title + " ({})".format(portname))
+
 
     def home_arm(self):
-        self.view.arm.home_arm()
-        self.view.point2plane.clear_point_to_plane()
-        self.view.point2plane.clear_point_to_point()
-        self.view.frame_reset()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        if(self.view.arm_attached):
+            self.view.arm.home_arm()
+            self.view.point2plane.clear_point_to_plane()
+            self.view.point2plane.clear_point_to_point()
+            self.view.frame_reset()
+            self.view.update_lines()            # update plot
+            self.canvas.draw()               # send updates to tkinder window
         
     def save_csv_points(self):
         defaultname = 'point_cloud_'+time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())+'.csv'
@@ -839,7 +981,8 @@ class GUI():
     # Start built-in animation. don't use at the same time as the custom render loop
     def render_ani(self):
         try:
-            self.ani.resume()
+            self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    
+            #self.ani.resume()
         except:
             pass
 
@@ -865,7 +1008,8 @@ class GUI():
                 pass
             
         self.update = not self.update
-        self.view.arm.ser.reset_input_buffer()
+        if(self.view.arm_attached):
+            self.view.arm.ser.reset_input_buffer()
 
     def toggle_p2p(self):
         self.view.togglep2p()
@@ -973,28 +1117,24 @@ class GUI():
                 pass
     
 class App():
-    def __init__(self, arm = None, view = None, gui = None):
-        if arm is None:
-            arm = Arm()
+    def __init__(self, view = None, gui = None):
         if view is None:
-            view = View(arm)
+            view = View()
         if gui is None:
             gui = GUI(view)
 
         self.gui = gui
         self.view = view
-    
+        self.arm = view.arm
 
 if __name__ == "__main__":
+    # Here's the idea:
+    # On startup, scan the ports. If you find a microscribe, connect it right away (send 'r')
+    # If nothing found, load an empty plot. The GUI owns the plot and can attach an arm to it once connected
+
     app = App()
+    app.gui.auto_scan()
+    app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
 
-    app.view.arm.open_source()
-    app.view.arm.wait_for_init()
-    print(">Setting datastream mode")
-    app.view.arm.send_command('q')
-
-    #app.gui.render()           # use custom render loop
-    app.gui.render_ani()        # use built-in animation scheduler. 
-
-    app.view.data.testCSV()
+    # app.view.data.testCSV()
     app.gui.root.mainloop()
