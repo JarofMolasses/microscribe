@@ -16,13 +16,19 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-matplotlib.use("TkAgg")
+matplotlib.use("Qt5Agg")                        # FIXES THE SET 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
 
 import tkinter as tk
-from tkinter import Menu
+from tkinter import Menu, Button, Frame
 from tkinter.filedialog import asksaveasfile
+from tkinter.scrolledtext import ScrolledText
+
+
+# this seems good. But doesn't like the redirected stderr
+#import ttkbootstrap as ttk
+#from ttkbootstrap.scrolled import ScrolledText
 
 import time
 import timeit
@@ -33,31 +39,23 @@ import glob
 
 from matplotlib import cm
 
+class PrintLogger(object):  # create file like object
 
-# see: https://stackoverflow.com/questions/13685386/how-to-set-the-equal-aspect-ratio-for-all-axes-x-y-z
-# May be no longer needed as Axes3D seems to have working aspect equal function 
-# def set_axes_equal(ax):
-#     """
-#     Make axes of 3D plot have equal scale so that spheres appear as spheres,
-#     cubes as cubes, etc.
-#     Input
-#       ax: a matplotlib axis, e.g., as output from plt.gca().
-#     """
-#     x_limits = ax.get_xlim3d()
-#     y_limits = ax.get_ylim3d()
-#     z_limits = ax.get_zlim()
-#     x_range = abs(x_limits[1] - x_limits[0])
-#     x_middle = np.mean(x_limits)
-#     y_range = abs(y_limits[1] - y_limits[0])
-#     y_middle = np.mean(y_limits)
-#     z_range = abs(z_limits[1] - z_limits[0])
-#     z_middle = np.mean(z_limits)
-#     # The plot bounding box is a sphere in the sense of the infinity
-#     # norm, hence I call half the max range the plot radius.
-#     plot_radius = 0.5*max([x_range, y_range, z_range])
-#     ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
-#     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
-#     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+    def __init__(self, textbox):  # pass reference to text widget
+        self.textbox = textbox  # keep ref
+
+    def write(self, text):
+        self.textbox.configure(state="normal")  # make field editable
+        self.textbox.insert("end", text)  # write text to textbox
+        self.textbox.see("end")  # scroll to end
+        self.textbox.configure(state="disabled")  # make field readonly
+        self.textbox.update_idletasks()             # should make it update
+    
+    def close():
+        pass
+
+    def flush(self):  # needed for file like object
+        pass
 
 # implementing point to reference plane or point to point measurement
 # TODO later: evaluate flatness, parallelism, roundness?
@@ -261,7 +259,7 @@ class Arm():
         self.initialized = False
         self.portname = portname
 
-    def open_source(self):
+    def open(self):
         if(self.ser.is_open):
             self.ser.close()
         print(">Attempting to open serial port...")
@@ -317,69 +315,7 @@ class Arm():
                 return
         print(">Timed out waiting for response")
 
-    # see : https://stackoverflow.com/a/14224477
-    def serial_ports():
-        """ Lists serial port names
-
-            :raises EnvironmentError:
-                On unsupported or unknown platforms
-            :returns:
-                A list of the serial ports available on the system
-        """
-        if sys.platform.startswith('win'):
-            ports = ['COM%s' % (256 - i) for i in range(256)]
-        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
-            # this excludes your current terminal "/dev/tty"
-            ports = glob.glob('/dev/tty[A-Za-z]*')
-        elif sys.platform.startswith('darwin'):
-            ports = glob.glob('/dev/tty.*')
-        else:
-            raise EnvironmentError('Unsupported platform')
-
-        result = []
-        for port in ports:
-            try:
-                s = serial.Serial(port, baudrate = 57600)
-                result.append(port)
-                s.close()
-            except (OSError, serial.SerialException):
-                pass
-        
-        return result
-
-    # From a list of available COM ports, identifies the first Microscribe interface 
-    # Assumes only one is connected.
-    def find_microscribe(listports):
-        target = None
-        for port in listports:
-            s = serial.Serial(port, baudrate = 57600)
-            print(">Checking for Microscribe interface device on " + port)
-            if(s.is_open): 
-                s.close()
-            s.open()
-            # s.reset_output_buffer()
-            # s.reset_input_buffer()
-            time.sleep(1)                       # this is necessary to allow the interface to come up
-            s.write('i'.encode('utf-8'))
-            timeout = 0.5
-            time_start = timeit.default_timer()
-            print(">Waiting for ID")
-            while(timeit.default_timer() - time_start < timeout):       
-                if(s.in_waiting):
-                    try:
-                        response = s.readline().decode('utf-8').rstrip()
-                        print(">ID:")
-                        print(response)
-                        if("microscribe" in response.lower()):
-                            target = port 
-                            print(">Confirmed Microscribe interface on " + port)
-                            return target
-                    except:
-                        pass
-            print(">Timed out waiting for response")
-
-        return target
-            
+         
 
 class View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
@@ -399,7 +335,7 @@ class View():
 
         plt.style.use('dark_background')
 
-        self.fig = plt.figure(figsize=(10, 10))
+        self.fig = plt.figure(figsize=(10, 10), facecolor = 'black')
         self.ax = self.fig.add_subplot(111, projection = "3d")
 
         self.path = self.ax.plot([],[],[], color='aquamarine', alpha = 0.3, animated=True)
@@ -408,10 +344,9 @@ class View():
         self.stylus = self.ax.plot([],[],[], color='red', alpha = 0.3,animated=True)
 
         font = 'monospace'
-        self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=7, name = font)  
+        #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=7, name = font)  
         self.text2 = self.fig.text(0.5,0.96, "XYZ DATA", va='top', ha='center',color='lightgrey',fontsize=18, name = font)
         self.text3 = self.fig.text(0, 0.015, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color='lightgrey', fontsize = 7, name = font)
-        #self.text4 = self.fig.text(0.5,0.89, "TIP ORIENTATION", va='bottom', ha='center', color='lightgrey', fontsize = 20, name = font)
         self.text5 = self.fig.text(0, 0.03, "FRAME TIME", va='bottom', ha='left', color='lightgrey', fontsize = 7, name = font)
         self.textpointplane = self.fig.text(0.5, 0.1, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = 'orange', fontsize = 18, name = font)
         self.textpointplane.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
@@ -420,6 +355,9 @@ class View():
         self.textpointpoint.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         self.textpoint2 = self.fig.text(1, 0.015, "POINT 2", va = 'bottom', ha = 'right', color = 'lightgrey', fontsize = 7, name = font)
         self.textpoint1 = self.fig.text(1, 0.03, "POINT 1", va = 'bottom', ha = 'right', color = 'lightgrey', fontsize = 7, name = font)
+        
+        self.textconnection = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
+        self.textconnection.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         
         self.showPath = True
         self.showcsv = True
@@ -751,6 +689,7 @@ class View():
         self.frame_reset()
 
         if(self.arm_attached == True):
+            self.textconnection.set_visible(False)
             packet_received = False
             try:
                 self.arm.ser.write(('>').encode('utf-8'))
@@ -830,10 +769,9 @@ class View():
                                     self.textpointpoint.set_text("")
                                 
 
-                                self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
+                                #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
                                 self.text2.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
                                 self.text3.set_text("{:d} points in point cloud".format(len(self.data.savex)))
-                                #self.text4.set_text("($\\phi$, $\\theta$, $\\psi$): ({0:7.2f},{1:7.2f},{2:7.2f}) deg".format(dirx, diry, dirz)) 
                                 self.text5.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
                             else:
                                 pass
@@ -847,6 +785,8 @@ class View():
                 self.arm_attached = False
                 print(">Lost connection. Restart program or scan again")
                 pass
+        else:
+            self.textconnection.set_visible(True)
 
 class GUI():
     def __init__(self, view = None):
@@ -854,6 +794,7 @@ class GUI():
         root = tk.Tk()
         root.title(self.title + " (no device connected)")
         root.minsize(800,800)
+        root.configure(bg = 'black')
 
         menubar = Menu(root)
         filemenu = Menu(menubar, tearoff=0)
@@ -875,6 +816,7 @@ class GUI():
         viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
+        viewmenu.add_checkbutton(label = 'Hide console', command = lambda:self.toggle_console())     # if you need to pass arguments, use command = lambda: function()
 
         # measurement options
         # I don't understand why the checkbutton doesn't respond to programmed state!!
@@ -884,10 +826,12 @@ class GUI():
         measModes = Menu(meas, tearoff = 0)
         meas.add_command(label = 'Reset measurement', command = self.reset_meas)
         meas.add_cascade(label = 'Show/hide measurement', menu = measModes)
-        mode1 = tk.IntVar(value = 1)            # this is supposed to hide measurements by default
-        mode2 = tk.IntVar(value = 1)
-        measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1, command = self.toggle_p2plane)
-        measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, command = self.toggle_p2p)
+        mode1 = tk.IntVar()            # this is supposed to hide measurements by default
+        mode2 = tk.IntVar()
+        measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1, onvalue = 1, offvalue = 0, command = self.toggle_p2plane)
+        measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, onvalue = 1, offvalue = 0, command = self.toggle_p2p)
+        mode1.set(1)
+        mode2.set(1)
 
         if view is None:
             view = View()
@@ -896,18 +840,31 @@ class GUI():
         self.view.init_plot()
         self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
-        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        canvas.get_tk_widget().configure(background = 'black', highlightcolor='black', highlightbackground='black')
 
         canvas.mpl_connect('button_press_event', self.view.ax._button_press)
         canvas.mpl_connect('button_release_event', self.view.ax._button_release)
         canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
 
         plt.rcParams["keymap.quit"] = ["ctrl+w", "cmd+w"]           # Tried to bind Q to save the Q reference point but it's already bound to "quit" the mpl figure. Stupid. Disconnect it here
+
+        self.log_widget = ScrolledText(root, height=4, width=120, bg = 'black', fg = 'lightgrey', font=('consolas',8), padx = 10, pady = 10)
+        var = tk.StringVar()
+        self.log_label = tk.Label( root, textvariable = var, bg='darkgrey', fg= 'black', font=('consolas', 8, 'bold') )
+        var.set("CONSOLE OUTPUT:")
+        self.log_widget.pack(side = 'bottom', fill = 'both')
+        self.log_label.pack(padx = 10, side = 'bottom', anchor='w')
+        canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
+        #canvas._tkcanvas.pack(side='top', fill='both', expand=True)                                    # I don't know why we also have this, I stole this code after all.
+
+        self.logger = PrintLogger(self.log_widget)                                                           # redirecting the stdout to the logging widget
+        sys.stdout = self.logger
+        sys.stderr = self.logger
     
         self.root = root
         self.canvas = canvas
         self.update = True
+        self.console_visible = True
                 
         def close_window():
             if(self.view.arm_attached):
@@ -922,41 +879,108 @@ class GUI():
         root.bind("<space>", self.save_cloud_point)
         root.bind("<Key>", self.key_handler)
 
-        # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
-        # self.ani.pause()
+    # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
+    # self.ani.pause()
+    # see : https://stackoverflow.com/a/14224477
+    def serial_ports(self):
+        """ Lists serial port names
 
+            :raises EnvironmentError:
+                On unsupported or unknown platforms
+            :returns:
+                A list of the serial ports available on the system
+        """
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (256 - i) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            # this excludes your current terminal "/dev/tty"
+            ports = glob.glob('/dev/tty[A-Za-z]*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.*')
+        else:
+            raise EnvironmentError('Unsupported platform')
+
+        result = []
+        for port in ports:
+            try:
+                s = serial.Serial(port, baudrate = 57600)
+                result.append(port)
+                s.close()
+            except (OSError, serial.SerialException):
+                pass
+        
+        return result
+    
+    # From a list of available COM ports, identifies the first Microscribe interface 
+    # Assumes only one is connected.
+    def find_microscribe(self,listports = ""):
+        target = None
+        for port in listports:
+            s = serial.Serial(port, baudrate = 57600)
+            print(">Checking for Microscribe interface device on " + port)
+            if(s.is_open): 
+                s.close()
+            s.open()
+            # time_start = timeit.default_timer()
+            # while(timeit.default_timer() - time_start < 1.0):
+            #     self.root.update()
+            s.write('i'.encode('utf-8'))
+            timeout = 0.5
+            time_start = timeit.default_timer()
+            print(">Waiting for ID")
+            while(timeit.default_timer() - time_start < timeout):   
+                self.root.update()
+                if(s.in_waiting):
+                    try:
+                        response = s.readline().decode('utf-8').rstrip()
+                        print(">ID:")
+                        print(response)
+                        if("microscribe" in response.lower()):
+                            target = port 
+                            print(">Confirmed Microscribe interface on " + port)
+                            return target
+                    except:
+                        pass
+            print(">Timed out waiting for response")
+            s.close()
+
+        return target
+
+    # From a list of available COM ports, identifies the first Microscribe interface 
+    # Assumes only one is connected.
     def auto_scan(self):
         # Search all COM ports for a response
         print(">Scanning serial ports:")
-        print(Arm.serial_ports())
+        print(self.serial_ports())
 
         # if something found, initialize it on the microscribe side, then attach it to the plot so the plot can receive data later
         portname = ''
         try:
-            portnames = Arm.serial_ports()
-            portname = Arm.find_microscribe(portnames)
+            portnames = self.serial_ports()
+            portname = self.find_microscribe(portnames)
             arm = Arm(portname)
-            arm.open_source()
+            arm.open()
             result = arm.wait_for_init()
             if(result == True):
                 self.view.attach_arm(arm) 
                 print(">Arm attached successfully")
             else:
                 print(">Microscribe timed out.")
+            
+            # if arm was attached, then we can start plotting. If not, standby with empty plot.
+            if(app.view.arm_attached == True):
+                arm.ser.reset_input_buffer()
+                arm.ser.reset_output_buffer()
+                print(">Setting datastream mode")
+                arm.send_query('q')
+                self.view.arm.ser.reset_input_buffer()
+                self.view.arm.ser.reset_output_buffer()
+                self.root.title(self.title + " ({})".format(portname))
+
         except (IndexError, serial.SerialException):
             print(">Auto-scan unsuccessful.")
             # exit()
             pass
-
-        # if arm was attached, then we can start plotting. If not, standby with empty plot.
-        if(app.view.arm_attached == True):
-            arm.ser.reset_input_buffer()
-            arm.ser.reset_output_buffer()
-            print(">Setting datastream mode")
-            arm.send_query('q')
-            self.view.arm.ser.reset_input_buffer()
-            self.view.arm.ser.reset_output_buffer()
-            self.root.title(self.title + " ({})".format(portname))
 
 
     def home_arm(self):
@@ -982,6 +1006,7 @@ class GUI():
     def render_ani(self):
         try:
             self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    
+            self.canvas.draw_idle()
             #self.ani.resume()
         except:
             pass
@@ -1010,6 +1035,24 @@ class GUI():
         self.update = not self.update
         if(self.view.arm_attached):
             self.view.arm.ser.reset_input_buffer()
+
+
+    def toggle_console(self):
+        self.log_label.pack_forget()
+        self.log_widget.pack_forget()
+        self.canvas.get_tk_widget().pack_forget()
+        if(self.console_visible):
+            self.canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+        else:
+            self.log_widget.pack(side = 'bottom', fill = 'both', anchor = 'w')
+            self.log_label.pack(padx = 10, side = 'bottom', anchor='w')
+            self.canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
+            sys.stdout = self.logger
+            sys.stderr = self.logger
+        self.console_visible = not self.console_visible
+
 
     def toggle_p2p(self):
         self.view.togglep2p()
@@ -1136,5 +1179,6 @@ if __name__ == "__main__":
     app.gui.auto_scan()
     app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
 
-    # app.view.data.testCSV()
+    #app.view.data.testCSV()
+    
     app.gui.root.mainloop()
