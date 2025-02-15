@@ -1,43 +1,61 @@
 # TODO: 
-# replace the hardcoded serial port with proper search and identification. At minimum show dropdown with all available COM ports. Best is autoscan for a valid interface - this may take an additional handshaking routine 
 # Robustness: serial port selection, communication timeouts, error handling
-# Panning the plot is usable in Axes3D by default. Zooming with the right click sucks and should be changed to scroll.
-# Better connect/disconnect functionality
+# Zooming should be responsive to mouse position. This is pretty difficult to implement in 3D
 # Create proper unit tests for functions
 # TODO but later:
 # Implement background computation in separate thread (e.g. Serial, matrix manipulation), and/or use pyQT for more powerful plotting and UI
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import griddata
+# from scipy.spatial.transform import Rotation as R
+# from scipy.interpolate import griddata
 import math
 import random
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-matplotlib.use("Qt5Agg")                        # FIXES THE SET 
+mpl.use("Qt5Agg")                        # FIXES THE .set() method on labels. using .set() on checkbuttons is still broken 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.axes3d import _Quaternion
 
 import tkinter as tk
 from tkinter import Menu, Button, Frame
 from tkinter.filedialog import asksaveasfile
 from tkinter.scrolledtext import ScrolledText
 
-
-# this seems good. But doesn't like the redirected stderr
-#import ttkbootstrap as ttk
-#from ttkbootstrap.scrolled import ScrolledText
+# this seems good for customizing certain widgets. I've got a weird mix of traditional tk and ttkbootstrap just for the scrollbar to look better
+import ttkbootstrap as tb
+from ttkbootstrap.scrolled import ScrolledText as ST
 
 import time
 import timeit
 import serial
-
 import sys
 import glob
+import types
 
-from matplotlib import cm
+planecolor = 'plum'
+P2Pcolor = 'slategrey'
+P2Plcolor = 'orange'
+readoutcolor = 'whitesmoke'
+indicatorcolor = 'whitesmoke'
+consolecolor = 'slategrey'
+styluscolor = 'aquamarine'
+tipcolor = 'aquamarine'
+cloudcolor = 'red'
+
+
+# Storing keybinds for easy remapping later
+class Keys:
+    plane = 'q'
+    point = 'p'
+    rotate = '2'
+    pan = 'Tab'
+    cloud = 'space'
+    xy = 'x'
+    xz = 'y'
+    yz = 'z'
 
 class PrintLogger(object):  # create file like object
 
@@ -45,10 +63,12 @@ class PrintLogger(object):  # create file like object
         self.textbox = textbox  # keep ref
 
     def write(self, text):
-        self.textbox.configure(state="normal")  # make field editable
+        #self.textbox.configure(state="normal")  # make field editable --used for tk scrolledtext, not used for ttkbootstrap version
+        self.textbox.text.configure(state="normal")
         self.textbox.insert("end", text)  # write text to textbox
         self.textbox.see("end")  # scroll to end
-        self.textbox.configure(state="disabled")  # make field readonly
+        #self.textbox.configure(state="disabled")  # make field readonly -- used for tk scrolledtext, not used for ttkbootstrap version
+        self.textbox.text.configure(state="disabled")
         self.textbox.update_idletasks()             # should make it update
     
     def close():
@@ -188,6 +208,7 @@ class PointMeasure():
         self.ref_n = np.array([0,0,1])      # Normal unit vector
         self.ref_coef = np.array([0,0,1,0]) # Coefficients A B C D, where plane is defined as Ax + By + Cy + D = 0
         self.ref_D = np.array([0])          # Coefficient D (redundant?)
+        self.plane_ready = True
 
     def get_point_to_plane_d(self) -> float:
         if(not self.P_plane_loaded):
@@ -201,7 +222,7 @@ class PointMeasure():
         else:
             return self.intersect
 
-class plotData():
+class PlotData():
     def __init__(self):
         self.path_points = 64                         # max number of points to draw path of tip (ax.plot). 
         self.tip_points = 1                           # max number of points to show only the tip location (ax.scatter)
@@ -316,17 +337,111 @@ class Arm():
         print(">Timed out waiting for response")
 
          
+# I hate the default matplotlib pan and zoom function
+# Ideally, we'd have:
+# 1. Middle mouse rotates
+# 2. Scroll zooms
+# 3. Ctrl + middle mouse pans. 
+# However, it may not be ideal to use the mpl framework to implement the zoom part since I'm not sure I can have it react to the scrollwheel.
+def _custom_on_move(self, event):       # this is intended as a replacement for the Axes3D movement handler. Self refers to Axes3D object.
+    if not self.button_pressed:
+        return
+
+    if self.get_navigate_mode() is not None:
+        # we don't want to rotate if we are zooming/panning
+        # from the toolbar
+        return
+
+    if self.M is None:
+        return
+
+    x, y = event.xdata, event.ydata
+    # In case the mouse is out of bounds.
+    if x is None or event.inaxes != self:
+        return
+
+    dx, dy = x - self._sx, y - self._sy
+    w = self._pseudo_w
+    h = self._pseudo_h
+
+    # Rotation
+    if self.button_pressed in self._rotate_btn:
+        print("Rotating")
+        # rotate viewing point
+        # get the x and y pixel coords
+        if dx == 0 and dy == 0:
+            return
+
+        style = mpl.rcParams['axes3d.mouserotationstyle']
+        if style == 'azel':
+            roll = np.deg2rad(self.roll)
+            delev = -(dy/h)*180*np.cos(roll) + (dx/w)*180*np.sin(roll)
+            dazim = -(dy/h)*180*np.sin(roll) - (dx/w)*180*np.cos(roll)
+            elev = self.elev + delev
+            azim = self.azim + dazim
+            roll = self.roll
+        else:
+            q = _Quaternion.from_cardan_angles(
+                    *np.deg2rad((self.elev, self.azim, self.roll)))
+
+            if style == 'trackball':
+                k = np.array([0, -dy/h, dx/w])
+                nk = np.linalg.norm(k)
+                th = nk / mpl.rcParams['axes3d.trackballsize']
+                dq = _Quaternion(np.cos(th), k*np.sin(th)/nk)
+            else:  # 'sphere', 'arcball'
+                current_vec = self._arcball(self._sx/w, self._sy/h)
+                new_vec = self._arcball(x/w, y/h)
+                if style == 'sphere':
+                    dq = _Quaternion.rotate_from_to(current_vec, new_vec)
+                else:  # 'arcball'
+                    dq = _Quaternion(0, new_vec) * _Quaternion(0, -current_vec)
+
+            q = dq * q
+            elev, azim, roll = np.rad2deg(q.as_cardan_angles())
+
+        # update view
+        vertical_axis = self._axis_names[self._vertical_axis]
+        self.view_init(
+            elev=elev,
+            azim=azim,
+            roll=roll,
+            vertical_axis=vertical_axis,
+            share=True,
+        )
+        self.stale = True
+
+    # Pan
+    elif self.button_pressed in self._pan_btn:
+        # Start the pan event with pixel coordinates
+        px, py = self.transData.transform([self._sx, self._sy])
+        self.start_pan(px, py, 2)
+        # pan view (takes pixel coordinate input)
+        self.drag_pan(2, None, event.x, event.y)
+        self.end_pan()
+
+    # Zoom
+    elif self.button_pressed in self._zoom_btn:
+        # zoom view (dragging down zooms in)
+        scale = h/(h - dy)
+        self._scale_axis_limits(scale, scale, scale)
+
+    # Store the event coordinates for the next time through.
+    self._sx, self._sy = x, y
+    # Always request a draw update at the end of interaction
+    self.get_figure(root=True).canvas.draw_idle()
+
 
 class View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
         self.arm_attached = False
 
-        # if arm is None:
-        #     arm = Arm()
-        self.arm = Arm()          # TODO: make arm "detachable", that is, if there is no arm available make it possible to generate an empty View() so that an arm can be attached later.
+        if arm is None:
+            arm = Arm()
+        self.arm = arm          # TODO: make arm "detachable", that is, if there is no arm available make it possible to generate an empty View() so that an arm can be attached later.
 
         if plotdata is None:
-            plotdata = plotData()
+            plotdata = PlotData()
         self.data = plotdata
 
         if point2plane is None:
@@ -335,27 +450,42 @@ class View():
 
         plt.style.use('dark_background')
 
-        self.fig = plt.figure(figsize=(10, 10), facecolor = 'black')
+        self.fig = plt.figure(facecolor = 'black')
+
+        # Two ways to generate 3D Axes
+        # add_subplot is the proper way to do this. https://github.com/matplotlib/matplotlib/issues/24639
+        # 1. add_subplot()
         self.ax = self.fig.add_subplot(111, projection = "3d")
 
-        self.path = self.ax.plot([],[],[], color='aquamarine', alpha = 0.3, animated=True)
-        self.point_graph, = self.ax.plot([],[],[], color='aquamarine', alpha = 1,linestyle="",markersize=10, marker = '.', animated=True)
-        self.cloud = self.ax.plot([],[],[], color='red', alpha = 1,linestyle="",markersize=5, animated=True)
-        self.stylus = self.ax.plot([],[],[], color='red', alpha = 0.3,animated=True)
+        # 2. add_axes(Axes3D)
+        # ax3d = Axes3D(self.fig)
+        # self.ax = self.fig.add_axes(ax3d)       
+
+        self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=[])                         # disable everything except rotations by default
+        self.fig.canvas.callbacks._connect_picklable('scroll_event', self._on_scroll)      # alternate method for attaching event callbacks used inside mpl. 
+        # self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+        # self.fig.canvas.mpl_connect('key_press_event', self._on_press)
+        # self.fig.canvas.mpl_connect('key_release_event', self._on_release)
+
+        self.path = self.ax.plot([],[],[], color=styluscolor, alpha = 0.3, animated=True)
+        self.point_graph, = self.ax.plot([],[],[], color=tipcolor, alpha = 1,linestyle="",markersize=10, marker = '.', animated=True)
+        self.cloud = self.ax.plot([],[],[], color=cloudcolor, alpha = 1,linestyle="",markersize=5, animated=True)
+        self.stylus = self.ax.plot([],[],[], color=styluscolor, alpha = 0.3,animated=True)
 
         font = 'monospace'
-        #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color='lightgrey',fontsize=7, name = font)  
-        self.text2 = self.fig.text(0.5,0.96, "XYZ DATA", va='top', ha='center',color='lightgrey',fontsize=18, name = font)
-        self.text3 = self.fig.text(0, 0.015, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color='lightgrey', fontsize = 7, name = font)
-        self.text5 = self.fig.text(0, 0.03, "FRAME TIME", va='bottom', ha='left', color='lightgrey', fontsize = 7, name = font)
-        self.textpointplane = self.fig.text(0.5, 0.1, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = 'orange', fontsize = 18, name = font)
+        #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color=indicatorcolor,fontsize=7, name = font)  
+        self.textreadout = self.fig.text(0.5,0.96, "XYZ DATA", va='top', ha='center',color=readoutcolor,fontsize=18, name = font)
+        self.textreadout.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
+        self.textcloudpoints = self.fig.text(0, 0.015, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
+        self.textfps = self.fig.text(0, 0.03, "FRAME TIME", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
+        self.textpointplane = self.fig.text(0.5, 0.1, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = P2Plcolor, fontsize = 18, name = font)
         self.textpointplane.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
-        self.text7 = self.fig.text(1, 0, "NUMBER OF PLANE REFERENCE POINTS", va='bottom', ha='right', color = 'lightgrey', name = font, fontsize = 7)
-        self.textpointpoint = self.fig.text(0.5, 0.06, "POINT TO POINT", va = 'bottom', ha = 'center', color = 'salmon', fontsize = 18, name = font)
+        self.textplanerefpoints = self.fig.text(1, 0, "NUMBER OF PLANE REFERENCE POINTS", va='bottom', ha='right', color = indicatorcolor, name = font, fontsize = 7)
+        self.textpointpoint = self.fig.text(0.5, 0.06, "POINT TO POINT", va = 'bottom', ha = 'center', color = P2Pcolor, fontsize = 18, name = font)
         self.textpointpoint.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
-        self.textpoint2 = self.fig.text(1, 0.015, "POINT 2", va = 'bottom', ha = 'right', color = 'lightgrey', fontsize = 7, name = font)
-        self.textpoint1 = self.fig.text(1, 0.03, "POINT 1", va = 'bottom', ha = 'right', color = 'lightgrey', fontsize = 7, name = font)
-        
+        self.textpoint2 = self.fig.text(1, 0.015, "POINT 2", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
+        self.textpoint1 = self.fig.text(1, 0.03, "POINT 1", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
+
         self.textconnection = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
         self.textconnection.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         
@@ -366,13 +496,45 @@ class View():
         self.showp2p = True
 
         self.cone_height_res = 10
-        self.cone_angle_res = 10
+        self.cone_angle_res = 16
         self.cone_extension_height = 100
         self.coneX, self.coneY, self.coneZ = self.calculate_cone_const()
+
+        self._enable_drag = False
         
         self.current_frame_time = timeit.default_timer()
         self.current_frame_avg_queue = [self.current_frame_time]
         self.start = timeit.default_timer()
+
+    def _disable_pan(self):
+        if(self._enable_drag == True):       
+            self._enable_drag = False
+            self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=[])     # bind middle mouse to rotate on release. 
+
+    def _enable_pan(self):
+        if(self._enable_drag == False):
+            self._enable_drag = True
+            self.ax.mouse_init(rotate_btn = [], pan_btn = 2, zoom_btn=[])     # bind middle mouse to pan on press. Has a touch of extra lag due to key repeating constantly firing the event and interrupting the thread.
+    
+    def _on_release(self, event): 
+        if(event.key == 'tab'):             
+            self._disable_pan()
+
+    def _on_press(self, event):
+        if(event.key == 'tab'):             # Absolutely baffling: binding this to tab works much better than control?
+            self._enable_pan()
+
+    def _on_scroll(self, event):
+        w = self.ax._pseudo_w
+        h = self.ax._pseudo_h
+        sens = 0.1
+        if(event.button == 'down'):
+            scale = (1 + sens)
+
+        elif(event.button == 'up'):
+            scale = (1 - sens)
+        self.ax._scale_axis_limits(scale, scale, scale)
+        self.fig.canvas.draw_idle()
 
     def attach_arm(self, arm):
         self.arm = arm
@@ -443,7 +605,7 @@ class View():
         graph = ax.plot_surface(Xp+x, Yp+y, Zp+z,alpha=0.35,color=conecolor)          
         return graph
 
-    # see:https://stackoverflow.com/questions/12341159/creating-a-3d-cone-or-disk-and-keep-updating-its-axis-of-symmetry-with-matplotli 
+    # see: https://stackoverflow.com/questions/12341159/creating-a-3d-cone-or-disk-and-keep-updating-its-axis-of-symmetry-with-matplotli 
     def euler_rot(self,XYZ,phi,theta,psi):
         '''Returns the points XYZ rotated by the given euler angles'''
 
@@ -541,7 +703,6 @@ class View():
             curxlim3d = self.ax.get_xlim()
             curylim3d = self.ax.get_ylim()
             curzlim3d = self.ax.get_zlim()
-
             scale = 1
             xmin = curxlim3d[0]*scale
             xmax = curxlim3d[1]*scale
@@ -549,6 +710,14 @@ class View():
             ymax = curylim3d[1]*scale
             zmin = curzlim3d[0]*scale
             zmax = curzlim3d[1]*scale
+
+            # optionally, set static limits indicating effective range of machine
+            # xmin = -500
+            # xmax = 500
+            # ymin = -500
+            # ymax = 500
+            # zmin = -500
+            # zmax = 500
         
             threshold = 0.5
             A,B,C,D = self.point2plane.ref_coef
@@ -586,8 +755,6 @@ class View():
 
     def draw_point_plane_dist(self,linecolor = 'orange'):
         if(self.point2plane.P_plane_loaded and self.point2plane.plane_ready):
-            #line = np.vstack([self.point2plane.P_plane, self.point2plane.intersect]).T
-            # print(line)
             line = self.point2plane.line_plane.copy()
             graph = self.ax.plot(line[0,:], line[1,:], line[2,:], color = linecolor, alpha=1, linewidth = 1)
             return graph
@@ -731,34 +898,34 @@ class View():
 
                                 # Update all artists and text
                                 # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
-                                self.tip = self.ax.plot(dx,dy,dz,color='aquamarine', marker='.', alpha = 1,linestyle="",markersize=2)
+                                self.tip = self.ax.plot(dx,dy,dz,color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
                                 
                                 # The text is rather clumsily rendered.Takes a lot of lines!
                                 if(self.showPath is True):
-                                    self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color='aquamarine', alpha = 0.2, linewidth=1)
+                                    self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color=styluscolor, alpha = 0.2, linewidth=1)
                                 if(self.showcsv is True):
-                                    self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color='red', marker = '.', alpha=1, markersize=3)
+                                    self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
                                 if(self.showstylus is True):
-                                    self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz,'mediumaquamarine')
+                                    self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz, conecolor = styluscolor)
 
                                 if(self.point2plane.plane_ready):
                                     self.plane = self.draw_ref_plane()
                                     if(self.point2plane.P_plane_loaded and self.showp2plane):
-                                        self.draw_point_plane_dist('orange')
+                                        self.draw_point_plane_dist(P2Plcolor)
                                         self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
                                     else:
                                         self.textpointplane.set_text("")
-                                    self.text7.set_text("")
+                                    self.textplanerefpoints.set_text("")
                                 else:
                                     self.textpointplane.set_text("")
-                                    self.text7.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
+                                    self.textplanerefpoints.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
 
                                 if(self.point2plane.P_ref_loaded and self.showp2p):
                                     self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
                                     if(self.point2plane.P_point_loaded):
                                         self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
                                         if(self.showp2p):
-                                            self.draw_point_point_dist('salmon')
+                                            self.draw_point_point_dist(P2Pcolor)
                                             self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
                                     else:
                                         self.textpointpoint.set_text("")
@@ -770,89 +937,118 @@ class View():
                                 
 
                                 #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
-                                self.text2.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
-                                self.text3.set_text("{:d} points in point cloud".format(len(self.data.savex)))
-                                self.text5.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
+                                self.textreadout.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
+                                self.textcloudpoints.set_text("{:d} points in point cloud".format(len(self.data.savex)))
+                                self.textfps.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
                             else:
                                 pass
                         except UnicodeDecodeError:
                             pass
                     except serial.SerialException:     # couldn't read - lost connection
                         self.arm_attached = False
-                        print(">Lost connection. Restart program or scan again")
+                        print(">Read failed. Restart program or scan again")
                         break
-            except:                                         # couldn't write - lost connection
+            except serial.SerialException:                                         # couldn't write - lost connection
                 self.arm_attached = False
-                print(">Lost connection. Restart program or scan again")
+                print(">Write failed. Restart program or scan again")
                 pass
         else:
             self.textconnection.set_visible(True)
 
 class GUI():
     def __init__(self, view = None):
+        if view is None:
+            view = View()
+        self.view = view
+
+        self.UPPER_BOUND = 400
+
         self.title = "Microscribe 3D demo"
-        root = tk.Tk()
+        #root = tk.Tk()
+        root = tb.Window(themename='cyborg')
         root.title(self.title + " (no device connected)")
         root.minsize(800,800)
-        root.configure(bg = 'black')
+        #root.configure(bg = 'black')
 
         menubar = Menu(root)
         filemenu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label = 'File', menu=filemenu)
         filemenu.add_command(label = 'Save point cloud',command = self.save_csv_points)
+
         # microscribe options
         msmenu = Menu(menubar, tearoff = 0)
-        menubar.add_cascade(label='Microscribe options', menu = msmenu)
+        menubar.add_cascade(label='Microscribe', menu = msmenu)
         msmenu.add_command(label = 'Auto-scan', command = self.auto_scan)
         msmenu.add_command(label = 'Home', command = self.home_arm)
         
         # view options
         viewmenu = Menu(menubar, tearoff = 0)
-        menubar.add_cascade(label = 'View options', menu = viewmenu)
-        viewmenu.add_command(label = 'Reset all data', command = self.reset_plot)
-        viewmenu.add_command(label = 'Reset CSV data', command = self.reset_csv)
+        menubar.add_cascade(label = 'View', menu = viewmenu)
         viewmenu.add_command(label = 'Reset viewport', command = self.reset_window)
         viewmenu.add_checkbutton(label = 'Freeze', command = self.toggle_render)
         viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
         viewmenu.add_checkbutton(label = 'Hide console', command = lambda:self.toggle_console())     # if you need to pass arguments, use command = lambda: function()
-
-        # measurement options
-        # I don't understand why the checkbutton doesn't respond to programmed state!!
-        # I want it to be default on!!!
-        meas = Menu(menubar, tearoff = 0)
-        menubar.add_cascade(label = 'Measurement options', menu = meas)
-        measModes = Menu(meas, tearoff = 0)
-        meas.add_command(label = 'Reset measurement', command = self.reset_meas)
-        meas.add_cascade(label = 'Show/hide measurement', menu = measModes)
+        measModes = Menu(viewmenu, tearoff = 0)
+        viewmenu.add_cascade(label = 'Show/hide measurement', menu = measModes)
         mode1 = tk.IntVar()            # this is supposed to hide measurements by default
         mode2 = tk.IntVar()
         measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1, onvalue = 1, offvalue = 0, command = self.toggle_p2plane)
         measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, onvalue = 1, offvalue = 0, command = self.toggle_p2p)
-        mode1.set(1)
+        mode1.set(1)                            # I don't understand why the checkbutton doesn't respond to programmed state!! this should enable these by default
         mode2.set(1)
+        viewmenu.add_command(label = ("Snap to XY (%s)" % (Keys.xy)), command = self.view.xy)
+        viewmenu.add_command(label = ("Snap to XZ (%s)" % (Keys.xz)), command = self.view.xz)
+        viewmenu.add_command(label = ("Snap to YZ (%s)" % (Keys.yz)), command = self.view.yz)
 
-        if view is None:
-            view = View()
-        self.view = view
+        # operations
+        ops = Menu(menubar)
+        menubar.add_cascade(label = "Operations", menu = ops)
+        ops.add_command(label = 'Reset measurement', command = self.reset_meas)
+        ops.add_command(label = 'Reset all data', command = self.reset_plot)
+        ops.add_command(label = 'Reset CSV data', command = self.reset_csv)
+        ops.add_command(label = "Save reference plane point (%s)" % (Keys.plane), command = self.save_ref_plane)
+        ops.add_command(label = "Measure point (%s)" % (Keys.point), command = self.save_point_combined  )          
+        ops.add_command(label = "Save cloud point (%s)" % (Keys.cloud), command = self.save_cloud_point  )
+        ops.add_command(label = "Rotate (M%s)" % (Keys.rotate), command = None)
 
         self.view.init_plot()
         self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
-        canvas.get_tk_widget().configure(background = 'black', highlightcolor='black', highlightbackground='black')
+        canvas.get_tk_widget().configure(background = 'black', highlightcolor='lightgrey', highlightbackground='lightgrey')         # needed to remove unsightly border 
+        # canvas.mpl_connect('button_press_event', self.view.ax._button_press)
+        # canvas.mpl_connect('button_release_event', self.view.ax._button_release)
+        # canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
 
-        canvas.mpl_connect('button_press_event', self.view.ax._button_press)
-        canvas.mpl_connect('button_release_event', self.view.ax._button_release)
-        canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
+        plt.rcParams["keymap.quit"] = []           # Tried to bind Q to save the Q reference point but it's already bound to "quit" the mpl figure. Stupid. Disconnect it here
+        plt.rcParams["keymap.back"]=[]              # Actually, I hate all of these. Delete all of them
+        plt.rcParams["keymap.copy"]=[]
+        plt.rcParams["keymap.forward"]=[]
+        plt.rcParams["keymap.fullscreen"]=[]
+        plt.rcParams["keymap.grid"]=[]
+        plt.rcParams["keymap.grid_minor"]=[]
+        plt.rcParams["keymap.help"]=[]
+        plt.rcParams["keymap.home"]=[]
+        plt.rcParams["keymap.pan"]=[]
+        plt.rcParams["keymap.quit_all"]=[]
+        plt.rcParams["keymap.save"]=[]
+        plt.rcParams["keymap.xscale"]=[]
+        plt.rcParams["keymap.yscale"]=[]
+        plt.rcParams["keymap.zoom"]=[]
 
-        plt.rcParams["keymap.quit"] = ["ctrl+w", "cmd+w"]           # Tried to bind Q to save the Q reference point but it's already bound to "quit" the mpl figure. Stupid. Disconnect it here
+        for k,v in plt.rcParams.items():
+            if -1 != k.find("keymap"):
+                #print("plt.rcParams[\"%s\"]=[]"%(k))           
+                print("plt.rcParams[%s]=%s"%(k,v))
+                
 
-        self.log_widget = ScrolledText(root, height=4, width=120, bg = 'black', fg = 'lightgrey', font=('consolas',8), padx = 10, pady = 10)
-        var = tk.StringVar()
-        self.log_label = tk.Label( root, textvariable = var, bg='darkgrey', fg= 'black', font=('consolas', 8, 'bold') )
-        var.set("CONSOLE OUTPUT:")
-        self.log_widget.pack(side = 'bottom', fill = 'both')
+        #self.log_widget = ScrolledText(root, height=4, width=120, bg = 'black', fg = consolecolor, font=('consolas',8), padx = 10, pady = 10)
+        self.log_widget = ST(root, height = 4, width = 120, autohide = True, font=('consolas',8))
+        self.log_widget.text.configure(bg = 'black', fg = consolecolor)
+        #self.log_label = tk.Label( root, text = "CONSOLE OUTPUT:", bg=consolecolor, fg= 'black', font=('consolas', 8, "bold") )
+        self.log_label = tb.Label(root, text = "CONSOLE OUTPUT:", background = consolecolor, foreground='black', font=('consolas', 8, "bold"))
+        self.log_widget.pack(padx = 6, side = 'bottom', fill = 'both')
         self.log_label.pack(padx = 10, side = 'bottom', anchor='w')
         canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
         #canvas._tkcanvas.pack(side='top', fill='both', expand=True)                                    # I don't know why we also have this, I stole this code after all.
@@ -875,12 +1071,14 @@ class GUI():
             return
         self.root.protocol("WM_DELETE_WINDOW", close_window)
 
-        self.root.config(menu = menubar, takefocus = True)
-        root.bind("<space>", self.save_cloud_point)
+        self.root.config(menu = menubar)
+        #root.bind("<space>", self.save_cloud_point)
         root.bind("<Key>", self.key_handler)
+        root.bind("<KeyRelease>", self.key_release_handler)
 
-    # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
-    # self.ani.pause()
+        # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
+        # self.ani.pause()
+
     # see : https://stackoverflow.com/a/14224477
     def serial_ports(self):
         """ Lists serial port names
@@ -946,8 +1144,8 @@ class GUI():
 
         return target
 
-    # From a list of available COM ports, identifies the first Microscribe interface 
-    # Assumes only one is connected.
+    # Connects to available Microscribe interface automatically
+    # Assumes only one is connected. 
     def auto_scan(self):
         # Search all COM ports for a response
         print(">Scanning serial ports:")
@@ -1018,7 +1216,7 @@ class GUI():
             self.canvas.draw()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
                                                                   # draw() and draw_idle() are options. draw_idle() is faster but draw() seems to behave more nicely with the window
         self._renderjob = self.root.after(50, self.render)        # schedule updates with .after
-    
+
     def toggle_render(self):
         
         if(self.update):
@@ -1059,7 +1257,6 @@ class GUI():
         self.view.frame_reset()
         self.view.update_lines()            # update plot
         self.canvas.draw()               # send updates to tkinder window
-        pass
 
     def toggle_p2plane(self):
         self.view.togglep2plane()
@@ -1125,10 +1322,10 @@ class GUI():
             self.view.data.savez.pop()
 
     def save_ref_plane(self):
-        print(">Saved reference point")
-        XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
-        self.view.point2plane.save_ref_plane_point(XYZ)
-        pass
+        if(self.view.showp2plane):
+            print(">Saved reference point")
+            XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+            self.view.point2plane.save_ref_plane_point(XYZ)
 
     def save_point_to_point(self):
         print(">Saved measurement point (point to point)")
@@ -1140,22 +1337,39 @@ class GUI():
         XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
         self.view.point2plane.save_point_to_plane(XYZ)
 
-    def key_handler(self,e=None):
+    def save_point_combined(self):
+        if(self.view.showp2plane):
+            self.save_point_to_plane()
+        if(self.view.showp2p):
+            self.save_point_to_point()
+
+    # TODO: 
+    # move the key handler into the view class, this is all canvas stuff anyways. 
+  
+    def key_handler(self,e):           
+        #print(e.keysym)
         match e.keysym:
-            case 'q': 
-                if(self.view.showp2plane):
-                    self.save_ref_plane()
-            case 'p':
-                if(self.view.showp2plane):
-                    self.save_point_to_plane()
-                if(self.view.showp2p):
-                    self.save_point_to_point()
-            case 'x':
+            case Keys.plane: 
+                self.save_ref_plane()
+            case Keys.point:
+                self.save_point_combined()
+            case Keys.xy:
                 self.view.xy()
-            case 'y':
+            case Keys.yz:
                 self.view.yz()
-            case 'z':
+            case Keys.xz:
                 self.view.xz()
+            case Keys.pan:
+                self.view._enable_pan()
+            case Keys.cloud:
+                self.save_cloud_point()
+            case _:
+                pass
+    
+    def key_release_handler(self, e):
+        match e.keysym:
+            case Keys.pan:
+                self.view._disable_pan()
             case _:
                 pass
     
@@ -1180,5 +1394,4 @@ if __name__ == "__main__":
     app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
 
     #app.view.data.testCSV()
-    
     app.gui.root.mainloop()
