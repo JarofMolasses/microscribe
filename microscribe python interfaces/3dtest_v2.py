@@ -49,8 +49,8 @@ cloudcolor = 'red'
 # Storing keybinds for easy remapping later
 class Keys:
     plane = 'q'
-    point = 'p'
-    rotate = '2'
+    point = 'p'                 
+    rotate = '2'            # Rotate must be attached to mouse.
     pan = 'Tab'
     cloud = 'space'
     xy = 'x'
@@ -777,17 +777,17 @@ class View():
         self.ax.set_ylim3d(curylim3d)
         self.ax.set_zlim3d(curzlim3d)
 
-        if(self.ax.elev < 80 and self.ax.elev > -80):
+        if(self.ax.elev < 70 and self.ax.elev > -70):
             self.ax.set_zlabel("Z (mm)", color ='grey')         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
         else:
             self.ax.set_zticks([])
 
-        if((np.abs(self.ax.azim) > 10 and np.abs(self.ax.azim) <170) or np.abs(self.ax.elev) > 10):
+        if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
             self.ax.set_xlabel("X (mm)", color ='grey')
         else:
             self.ax.set_xticks([])
 
-        if(np.abs(self.ax.azim) < 80 or np.abs(self.ax.azim) > 100 or np.abs(self.ax.elev) > 10):
+        if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
             self.ax.set_ylabel("Y (mm)", color = 'grey')
         else:
             self.ax.set_yticks([])
