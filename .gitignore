@@ -173,3 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 MACHINE DATA.txt
+microscribe python interfaces/Archive/3dtest.py
+microscribe python interfaces/Archive/serialtest.py
