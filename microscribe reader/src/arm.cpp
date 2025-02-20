@@ -70,7 +70,7 @@ void arm_init(arm_rec *arm)
   hci_init(&arm->hci, 1, 9600L);
 
   arm->len_units = MM; // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-  arm->ang_units = DEGREES;
+  arm->ang_units = RADIANS;
   arm->ang_format = XYZ_FIXED;	
 
   arm->timer_report = 0;

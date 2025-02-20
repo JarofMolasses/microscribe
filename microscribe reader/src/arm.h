@@ -147,8 +147,8 @@ typedef struct arm_rec
     *   These may change with refinements to the Arm and calibration
     *   techniques.
     */
-	length  D[NUM_DOF];     /* Offsets between joint axes */
-	length  A[NUM_DOF];     /* Offsets between joint axes */
+	length  D[NUM_DOF];     /* Offsets between joint axes along previous z axis*/
+	length  A[NUM_DOF];     /* Length of common normal between joint axes*/
 	angle   ALPHA[NUM_DOF]; /* Skew angles between joint axes */
 
    angle   BETA;				/* the beta angle in T23 */
