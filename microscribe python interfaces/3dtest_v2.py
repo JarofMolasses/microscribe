@@ -553,6 +553,8 @@ class View():
         self.robot = Robot(links)
         self.robot_render = LinkRender(links, ax = self.ax)
 
+        self.showrobot = True
+
     def _disable_pan(self):
         if(self._enable_drag == True):       
             self._enable_drag = False
@@ -765,14 +767,6 @@ class View():
             ymax = curylim3d[1]*scale
             zmin = curzlim3d[0]*scale
             zmax = curzlim3d[1]*scale
-
-            # optionally, set static limits indicating effective range of machine
-            # xmin = -500
-            # xmax = 500
-            # ymin = -500
-            # ymax = 500
-            # zmin = -500
-            # zmax = 500
         
             threshold = 0.5
             A,B,C,D = self.point2plane.ref_coef
@@ -884,11 +878,14 @@ class View():
         self.ax.dist = 12
         self.ax.set_aspect('equal')                                                              # need this to have cubes look right
         #self.ax.set_box_aspect((np.ptp(curxlim3d), np.ptp(curylim3d), np.ptp(curzlim3d)))       # this also works to make cubes look right
+    
+    def toggle_robot(self):
+        self.showrobot = not self.showrobot
 
-    def togglePath(self):
+    def toggle_path(self):
         self.showPath = not self.showPath
 
-    def toggleCSV(self):
+    def toggle_CSV(self):
         self.showcsv = not self.showcsv
 
     def togglep2plane(self):
@@ -897,28 +894,28 @@ class View():
     def togglep2p(self):
         self.showp2p = not self.showp2p
 
-    def togglestylus(self):
+    def toggle_stylus(self):
         self.showstylus = not self.showstylus
 
     def update_lines(self, i = 1):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
-        def fps():
-            self.current_frame_time = timeit.default_timer() - self.start
-            self.current_frame_avg_queue.append(self.current_frame_time)
-            if len(self.current_frame_avg_queue) > 10:
-                self.current_frame_avg_queue.pop(0)
-            self.start = timeit.default_timer()
-        fps()
 
         if(self.arm_attached == True):
             self.textdisconnected.set_visible(False)
             # first try reading principal data (stylus location and pose)
             try:
                 if(self.tip_packet_cts == True):
-                    self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: endpoints, thetas, and calculated tip position. 
+                    self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: thetas, then calculated tip position. 
                     self.tip_packet_cts = False                     # last command was tip position, so we'll be looking for that.
-                    
-                while((not self.tip_packet_cts) and self.arm.ser.in_waiting):            
+                
+                if((not self.tip_packet_cts) and self.arm.ser.in_waiting):            # You can make this a while loop improve framerate... at the cost of taking up GUI processing time. If on a single thread, best to sacrifice update rate.
+                    def fps():
+                        self.current_frame_time = timeit.default_timer() - self.start
+                        self.current_frame_avg_queue.append(self.current_frame_time)
+                        if len(self.current_frame_avg_queue) > 10:
+                            self.current_frame_avg_queue.pop(0)
+                        self.start = timeit.default_timer()
+                    fps()
                     try:
                         serial_rx = self.arm.ser.readline()
                         indata = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
@@ -957,7 +954,6 @@ class View():
                         # self.arm_attached = False
                         self.detach_arm()
                         print(">Read failed. Restart program or scan again")
-                        break
             except:                                         # couldn't write - lost connection
                 # self.arm_attached = False
                 self.detach_arm()
@@ -979,11 +975,11 @@ class View():
                         self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
                     if(self.showstylus is True):
                         self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz, conecolor = styluscolor)
-                    
-                     # Update robot display
-                    self.robot.set_angles(self.data.joints, base_included = True)
-                    self.robot_render.draw_links()
-                    # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
+                    if(self.showrobot is True):
+                        # Update robot display
+                        self.robot.set_angles(self.data.joints, base_offset = True)
+                        self.robot_render.draw_links()
+                        # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
 
                     # The text is rather clumsily rendered.Takes a lot of lines!
                     if(self.point2plane.plane_ready):
@@ -1043,11 +1039,11 @@ class GUI():
         root.title(self.title + " (no device connected)")
         root.minsize(800,800)
        
-
+        # if you need to pass arguments, use command = lambda: function() - note the parantheses
         menubar = Menu(root)
         filemenu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label = 'File', menu=filemenu)
-        filemenu.add_command(label = 'Save point cloud',command = self.save_csv_points)
+        filemenu.add_command(label = 'Save point cloud',command = lambda:self.save_csv_points())     
 
         # microscribe options
         msmenu = Menu(menubar, tearoff = 0)
@@ -1063,7 +1059,8 @@ class GUI():
         viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
-        viewmenu.add_checkbutton(label = 'Hide console', command = lambda:self.toggle_console())     # if you need to pass arguments, use command = lambda: function()
+        viewmenu.add_checkbutton(label = 'Hide console', command = self.toggle_console)    
+        viewmenu.add_checkbutton(label = 'Hide joints', command = self.toggle_robot)
         measModes = Menu(viewmenu, tearoff = 0)
         viewmenu.add_cascade(label = 'Show/hide measurement', menu = measModes)
         mode1 = tk.IntVar()            # this is supposed to hide measurements by default
@@ -1128,8 +1125,8 @@ class GUI():
         #canvas._tkcanvas.pack(side='top', fill='both', expand=True)                                    # I don't know why we also have this, I stole this code after all.
 
         self.logger = PrintLogger(self.log_widget)                                                           # redirecting the stdout to the logging widget
-        sys.stdout = self.logger
-        sys.stderr = self.logger
+        # sys.stdout = self.logger
+        # sys.stderr = self.logger
     
         self.root = root
         self.canvas = canvas
@@ -1270,17 +1267,21 @@ class GUI():
     def save_csv_points(self):
         defaultname = 'point_cloud_'+time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())+'.csv'
         f = asksaveasfile(initialfile = defaultname)            # read the docs. this returns an opened filewriter
-        with f:
-            for i in range(len(self.view.data.savex)):
-                row = "%.2f, %.2f, %.2f\n" % (self.view.data.savex[i], self.view.data.savey[i], self.view.data.savez[i])
-                print("Write row to file:" + row.rstrip('\n'))
-                f.write(row)
-            print("Wrote {0} lines to {1}".format(len(self.view.data.savex), f.name))
+        if(f is not None):
+            with f:
+                for i in range(len(self.view.data.savex)):
+                    row = "%.2f, %.2f, %.2f\n" % (self.view.data.savex[i], self.view.data.savey[i], self.view.data.savez[i])
+                    print("Write row to file:" + row.rstrip('\n'))
+                    f.write(row)
+                print("Wrote {0} lines to {1}".format(len(self.view.data.savex), f.name))
+        else:
+            print("No file chosen. Returning")
+            pass
 
     # Start built-in animation. don't use at the same time as the custom render loop
     def render_ani(self):
         try:
-            self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    
+            self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=60, frames=1, blit=False)    
             self.canvas.draw_idle()
             #self.ani.resume()
         except:
@@ -1314,6 +1315,11 @@ class GUI():
             self.view.joint_packet_cts = True
             self.view.endpoint_packet_cts = True
 
+    def toggle_robot(self):
+        self.view.toggle_robot()
+        self.view.frame_reset()
+        self.view.update_lines()
+        self.canvas.draw()
 
     def toggle_console(self):
         self.log_label.pack_forget()
@@ -1353,19 +1359,19 @@ class GUI():
         self.canvas.draw()               # send updates to tkinder window
     
     def toggle_path(self):
-        self.view.togglePath()
+        self.view.toggle_path()
         self.view.frame_reset()
         self.view.update_lines()            # update fig, ax
         self.canvas.draw()                  # send updated fig, ax to tkinder window. otherwise the update will not happen until I interact with the window
     
     def toggle_csv(self):
-        self.view.toggleCSV()
+        self.view.toggle_CSV()
         self.view.frame_reset()
         self.view.update_lines()         
         self.canvas.draw()     
 
     def toggle_stylus(self):
-        self.view.togglestylus()
+        self.view.toggle_stylus()
         self.view.frame_reset()
         self.view.update_lines()
         self.canvas.draw()
@@ -1473,5 +1479,5 @@ if __name__ == "__main__":
     app.gui.auto_scan()
     app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
 
-    #app.view.data.testCSV()
+    app.view.data.testCSV()
     app.gui.root.mainloop()

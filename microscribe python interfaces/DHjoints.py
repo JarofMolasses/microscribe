@@ -11,6 +11,9 @@ from pytransform3d.plot_utils import plot_cylinder, remove_frame
 
 import math
 
+linkcolor = 'slategrey'
+jointcolor = 'lightgrey'
+
 # this generates cylinder on two endpoints. 
 def draw_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None):
     if(p0_ is None ):
@@ -45,7 +48,7 @@ def draw_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None):
 
     #surface ranges over t from 0 to length of axis and 0 to 2*pi
     t = np.linspace(0, mag, 2)
-    theta = np.linspace(0, 2 * np.pi, 20)
+    theta = np.linspace(0, 2 * np.pi, 10)
     rsample = np.linspace(0, R, 2)
 
     #use meshgrid to make 2d arrays
@@ -64,26 +67,6 @@ def draw_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None):
     # ax.plot_surface(X2, Y2, Z2, color='blue', alpha = 0.9)
     # ax.plot_surface(X3, Y3, Z3, color='blue', alpha = 0.9)
     return X,Y,Z,X2,Y2,Z2,X3,Y3,Z3
-
-class ArmRenderer:
-    def __init__(self, links):
-        pass
-
-# class for keeping track of each joint's orientation and location. 
-# each instance is responsible for a joint and the previous link.
-# (LINK - JOINT) -> (LINK - JOINT)
-
-# def rotation_matrix(axis, theta):
-# #General purpose rotation matrix with single angle
-#     axis = np.asarray(axis)
-#     axis = axis / math.sqrt(np.dot(axis, axis))
-#     a = math.cos(theta / 2.0)
-#     b, c, d = -axis * math.sin(theta / 2.0)
-#     aa, bb, cc, dd = a * a, b * b, c * c, d * d
-#     bc, ad, ac, ab, bd, cd = b * c, a * d, a * c, a * b, b * d, c * d
-#     return np.array([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
-#                     [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
-#                     [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
 
 def unit_vector(data, axis=None, out=None):
     """Return ndarray normalized by length, i.e. Euclidean norm, along axis.
@@ -155,7 +138,6 @@ def rotation_matrix(direction, angle, point=None):
     True
 
     """
-    # Why do I need to invert it?
     sina = math.sin(angle)
     cosa = math.cos(angle)
     direction = unit_vector(direction[:3])
@@ -182,8 +164,8 @@ class LinkRender:
     def __init__(self, links = [], ax=None):
         self.ax = ax
         self.links = links
-        self.plots_per_link = 7          # default number of plotting objects per link. 3 for the frame, 1 for the joint axis, 1 for the link 
-        self.link_plots = [self.plots_per_link*[] for i in range(len(self.links))]  
+        self.plots_per_link = 8          # default number of plotting objects per link. 3 for the frame, 1 for the joint axis, 1 for the link 
+        self.link_plots = [self.plots_per_link*[None] for i in range(len(self.links))]  
         # print("Initialized plotting objects: ")
         # print(self.link_plots)
         pass
@@ -194,27 +176,26 @@ class LinkRender:
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
 
-    def clear_links(self):
-        for i in range(len(self.links)):
-                self.undraw_link(i)
+    # def clear_links(self):
+    #     for i in range(len(self.links)):
+    #             self.undraw_link(i)
 
-    def undraw_link(self, index):                       # It works, but not certain about the memory freeing
-        # print("Clearing link %d" % index)
-        for i in range(len(self.link_plots[index])):
-            try:
-                # print("Plot object:")
-                # print(self.link_plots[index][i])
-                self.link_plots[index][i].pop(0).remove()
-            except:
-                try:
-                    self.link_plots[index][i].remove()
-                except:
-                    pass
-                    # print("Couldn't clear link %d" % index)
+    # def undraw_link(self, index):                       # It works, but not certain about the memory freeing
+    #     # print("Clearing link %d" % index)
+    #     for i in range(len(self.link_plots[index])):
+    #         try:
+    #             # print("Plot object:")
+    #             # print(self.link_plots[index][i])
+    #             self.link_plots[index][i].pop(0).remove()
+    #         except:
+    #             try:
+    #                 self.link_plots[index][i].remove()
+    #             except:
+    #                 pass
 
-    def redraw_links(self):
-        self.clear_links()
-        self.draw_links()
+    # def redraw_links(self):
+    #     self.clear_links()
+    #     self.draw_links()
 
     def draw_base_plane(self):
         ax = self.ax
@@ -222,16 +203,16 @@ class LinkRender:
         xmax = 60
         ymin = -40
         ymax = 40
-
         [A,B,C,D] = [0,0,1,0]
         X = np.array([xmin, xmin, xmax, xmax])
         Y = np.array([ymin, ymax, ymin, ymax])
         Z = -(A*X + B*Y - D)/C
-                
         return X,Y,Z
 
     def draw_links(self):
         ax = self.ax
+        linkcolor = 'slategrey'
+        jointcolor = 'lightgrey'
         for i in range(len(self.links)):
             link = self.links[i]
             #link.draw_uvw(self.ax)
@@ -239,36 +220,42 @@ class LinkRender:
             v = np.vstack([link.endpoint, 30*link.uvw[:,1] + link.endpoint])
             w = np.vstack([link.endpoint, 30*link.uvw[:,2] + link.endpoint])
 
-            self.link_plots[i] = []         # trying to do some garbage collection?
+            self.link_plots[i] = []         # Forced to do this until I can manage the garbage collection on the plot objects properly
 
             if(link.draw_link == True):
                 # print("Drawing link %d" % i)
                 if(link.child is not None):
                     link_p0 = link.endpoint
                     link_p1 = link.child.endpoint
-
                     # X = [link_p0[0], link_p1[0]]
                     # Y = [link_p0[1], link_p1[1]]
                     # Z = [link_p0[2], link_p1[2]]
                     # self.link_plots[i].append(ax.plot(X,Y,Z, color = 'red', alpha = 0.3))
 
                     X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = draw_cylinder_on_axis(p0_ = link_p0, p1_=link_p1, radius = 5)
-                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color='red', alpha = 0.15))
+                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15))
+                    # self.link_plots[i][0] = ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15)
 
             if(link.draw_joint == True):
                 # print("Drawing joint %d" % i)
-                if(link.fixed == False):
+                if(link.index != 0):                                    # Don't show a joint on the first frame, it's fixed.
                     joint_p0 = link.endpoint + 25*link.uvw[:,2]         # joint cylinder along z axis
                     joint_p1 = link.endpoint - 25*link.uvw[:,2]         
                         
                     X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = draw_cylinder_on_axis(p0_ = joint_p0, p1_=joint_p1, radius = 15)
-                    self.link_plots[i].append(ax.plot_surface(X2, Y2, Z2, color='red', alpha = 0.6))
-                    self.link_plots[i].append(ax.plot_surface(X3, Y3, Z3, color='red', alpha = 0.6))
-                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color='red', alpha = 0.6))
+                    self.link_plots[i].append(ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6))
+                    self.link_plots[i].append(ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6))
+                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6))
+
+                    # self.link_plots[i][1] = ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6)
+                    # self.link_plots[i][2] = ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6)
+                    # self.link_plots[i][3] = ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6)
            
-            if(link.fixed == True):
-                X,Y,Z = self.draw_base_plane()
-                self.link_plots[i].append(ax.plot_trisurf(X,Y,Z,color = 'red', alpha = 0.5,edgecolor='none',linewidth=0))
+                else:
+                    X,Y,Z = self.draw_base_plane()
+                    self.link_plots[i].append(ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0))
+
+                    # self.link_plots[i][4] = ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0)
             
             if(link.draw_frame == True):
                 # print("Drawing frame %d" % (i))
@@ -276,16 +263,20 @@ class LinkRender:
                 self.link_plots[i].append(ax.plot(v[:,0], v[:,1], v[:,2],color = 'green'))
                 self.link_plots[i].append(ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue'))
 
+                # self.link_plots[i][5] = (ax.plot(u[:,0], u[:,1], u[:,2],color = 'red'))
+                # self.link_plots[i][6] = (ax.plot(v[:,0], v[:,1], v[:,2],color = 'green'))
+                # self.link_plots[i][7] = (ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue'))
+
             self.ax.set_aspect('equal')
 
 class Robot: 
     def __init__(self, links):
         self.links = links
 
-    def set_angles(self, angles, base_included = False):
+    def set_angles(self, angles, base_offset = False):
         for i in range(len(angles)):
             try:
-                if(base_included == False):
+                if(base_offset == False):
                     self.links[i].set_angle(angles[i])
                 else:
                     self.links[i+1].set_angle(angles[i])        # if the base frame is included in the model, then we need to offset the angles by one.
@@ -295,7 +286,9 @@ class Robot:
     def get_end_effector_endpoint(self) -> np.ndarray:
         return self.links[-1].endpoint
 
-
+# class for keeping track of each joint's orientation and location. 
+# each instance is responsible for a joint and the previous link.
+# (LINK - JOINT) -> (LINK - JOINT)
 class Link:
     def __init__(self, parent = None, alpha = 0, beta=0, commonnormal = 0, offsetpsi = 0, A = 0, D = 0, angle = 0, fixed = False, standard = False, draw_frame = False, draw_joint = True, draw_link = True):
         self.child = None
@@ -421,10 +414,8 @@ if __name__ == "__main__":
     renderer = LinkRender(links, ax = ax)
 
     renderer.init_render()
-    renderer.draw_links()
-
-    robot.set_angles([0.00000,2.39033,5.26539,0.00000,4.89800], base_included = True)
-    renderer.redraw_links() 
+    robot.set_angles([0.00000,2.39033,5.26539,0.00000,4.89800], base_offset = True)
+    renderer.draw_links() 
     
     plt.show()
     pass
