@@ -1,9 +1,7 @@
-# TODO: 
-# Robustness: serial port selection, communication timeouts, error handling
-# Zooming should be responsive to mouse position. This is pretty difficult to implement in 3D
-# Create proper unit tests for functions
-# TODO but later:
-# Implement background computation in separate thread (e.g. Serial, matrix manipulation), and/or use pyQT for more powerful plotting and UI
+
+# TODO:
+# Implement background computation in separate thread (e.g. Serial, matrix manipulation). This may be best to move off of tkinter
+# We have pushed matplotlib's 3D capabilities pretty much as far as they'll go. We should move to a real 3D engine (MayaVi, pyQtgraph, three.js)
 
 import numpy as np
 # from scipy.spatial.transform import Rotation as R
@@ -35,6 +33,8 @@ import sys
 import glob
 import types
 
+from DHjoints import Robot,Link,LinkRender
+
 planecolor = 'plum'
 P2Pcolor = 'slategrey'
 P2Plcolor = 'orange'
@@ -44,7 +44,7 @@ consolecolor = 'slategrey'
 styluscolor = 'aquamarine'
 tipcolor = 'aquamarine'
 cloudcolor = 'red'
-
+NUM_ENCODERS = 5
 
 # Storing keybinds for easy remapping later
 class Keys:
@@ -224,8 +224,8 @@ class PointMeasure():
 
 class PlotData():
     def __init__(self):
-        self.path_points = 64                         # max number of points to draw path of tip (ax.plot). 
-        self.tip_points = 1                           # max number of points to show only the tip location (ax.scatter)
+        self.path_points = 64                         # max number of points to draw path of tip 
+        self.tip_points = 1                           # max number of points to show only the tip location 
         self.csv_points = 10000                        # max number of points in csv point cloud. This is pretty much as high as we can go until I optimize things 
                                                       # It may require PyQT to push this significantly higher.
         self.x = []
@@ -243,6 +243,39 @@ class PlotData():
         self.x_offset = 0
         self.y_offset = 0
         self.z_offset = 0
+
+        self.endpointx = [None]*(NUM_ENCODERS+1)
+        self.endpointy = [None]*(NUM_ENCODERS+1)
+        self.endpointz = [None]*(NUM_ENCODERS+1)
+        self.joints = [None]*(NUM_ENCODERS)
+
+    def update_joints(self,joints):
+        if(len(joints) == NUM_ENCODERS):
+            self.joints = joints
+    
+    def update_endpoints(self, endpoints):
+        pass
+
+    def append_xyz(self, dx, dy, dz, dirx, diry, dirz):
+        self.x.append(dx)
+        self.y.append(dy)
+        self.z.append(dz)
+        self.tipx.append(dx)
+        self.tipy.append(dy)
+        self.tipz.append(dz)
+        self.dirx = dirx
+        self.diry = diry
+        self.dirz = dirz
+
+        if len(self.x) > self.path_points:        # remove the oldest point to limit list length
+            self.x.pop(0)
+            self.y.pop(0)
+            self.z.pop(0)
+
+        if len(self.tipx) > self.tip_points:        # remove the oldest point to limit list length
+            self.tipx.pop(0)
+            self.tipy.pop(0)
+            self.tipz.pop(0)
 
     def set_num_points(self, num_points):
         self.path_points = num_points
@@ -274,7 +307,7 @@ class PlotData():
 class Arm():
     def __init__(self, portname = None):
         try:
-            self.ser = serial.Serial(portname,57600, timeout=5)       # this should not be hardcoded, obviously
+            self.ser = serial.Serial(portname,115200, timeout=5)       # this should not be hardcoded, obviously
         except:
             pass
         self.initialized = False
@@ -450,20 +483,21 @@ class View():
 
         plt.style.use('dark_background')
 
-        self.fig = plt.figure(facecolor = 'black')
+        self.fig = plt.figure(figsize = (10,10), facecolor = 'black')
 
         # Two ways to generate 3D Axes
         # add_subplot is the proper way to do this. https://github.com/matplotlib/matplotlib/issues/24639
-        # 1. add_subplot()
-        self.ax = self.fig.add_subplot(111, projection = "3d")
+        # 1. add_subplot() or add_axes()
+        #self.ax = self.fig.add_subplot(111, projection = "3d")
+        self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d')
 
         # 2. add_axes(Axes3D)
         # ax3d = Axes3D(self.fig)
         # self.ax = self.fig.add_axes(ax3d)       
 
-        self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=[])                         # disable everything except rotations by default
-        self.fig.canvas.callbacks._connect_picklable('scroll_event', self._on_scroll)      # alternate method for attaching event callbacks used inside mpl. 
-        # self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+        self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=[])                         # disable the drag zoom
+        #self.fig.canvas.callbacks._connect_picklable('scroll_event', self._on_scroll)      # alternate method for attaching event callbacks used inside mpl. 
+        self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         # self.fig.canvas.mpl_connect('key_press_event', self._on_press)
         # self.fig.canvas.mpl_connect('key_release_event', self._on_release)
 
@@ -485,9 +519,8 @@ class View():
         self.textpointpoint.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         self.textpoint2 = self.fig.text(1, 0.015, "POINT 2", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
         self.textpoint1 = self.fig.text(1, 0.03, "POINT 1", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
-
-        self.textconnection = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
-        self.textconnection.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
+        self.textdisconnected = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
+        self.textdisconnected.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         
         self.showPath = True
         self.showcsv = True
@@ -505,6 +538,20 @@ class View():
         self.current_frame_time = timeit.default_timer()
         self.current_frame_avg_queue = [self.current_frame_time]
         self.start = timeit.default_timer()
+
+        self.tip_packet_cts = True
+        self.joint_packet_cts = True
+
+        link0 = Link(fixed = True, draw_frame = True)                                # origin frame
+        link1 = Link(parent = link0, D=210.820007)
+        link2 = Link(parent = link1, D=-22.250398, A =24.307800, alpha = 1.567824)
+        link3 = Link(parent = link2, D=-0.025400, A = 260.400787, alpha = 0.002684, beta = -0.002780)
+        link4 = Link(parent = link3, D=234.848403, A=13.893800, alpha = 1.567920)
+        link5 = Link(parent = link4, D=8.128000, A = -10.160000, alpha = -1.572618, draw_link = False)
+        link6 = Link(parent = link5, D=-134.010391,A = 10.160000, alpha = -1.569550, draw_joint = False, draw_link = False, draw_frame = True)
+        links = [link0,link1,link2,link3,link4,link5,link6]
+        self.robot = Robot(links)
+        self.robot_render = LinkRender(links, ax = self.ax)
 
     def _disable_pan(self):
         if(self._enable_drag == True):       
@@ -539,7 +586,14 @@ class View():
     def attach_arm(self, arm):
         self.arm = arm
         self.arm_attached = True
+        self.tip_packet_cts = True
+        self.joint_packet_cts = True
+        self.endpoint_packet_cts = True
         pass
+
+    def detach_arm(self):
+        self.arm = None
+        self.arm_attached = False
 
     def xy(self):
         self.ax.view_init(elev=90, azim=-90)
@@ -685,8 +739,9 @@ class View():
 
     #         graph = ax.plot_surface(Xprime+x, Yprime+y, Zprime+z,alpha=0.35, cmap=cm.GnBu)          
     #         return graph
-    # def rotation_matrix(self, axis, theta):
-    # General purpose rotation matrix with single angle
+
+    def rotation_matrix(self, axis, theta):
+    #General purpose rotation matrix with single angle
         axis = np.asarray(axis)
         axis = axis / math.sqrt(np.dot(axis, axis))
         a = math.cos(theta / 2.0)
@@ -761,6 +816,10 @@ class View():
         else:
             pass
 
+    def draw_endpoints(self, linecolor = 'blue'):
+        self.ax.plot(self.data.endpointx[0:NUM_ENCODERS], self.data.endpointy[0:NUM_ENCODERS], self.data.endpointz[0:NUM_ENCODERS], color = linecolor, marker = 'o')
+        pass
+
     def frame_reset(self):
         # running this every time is a very slow way to animate. But. It is fine.
         # depending on the orientation hide some labels
@@ -792,7 +851,6 @@ class View():
         else:
             self.ax.set_yticks([])
   
-
     def init_plot(self):
         print(">Init plot")
         self.reset_axis_limits()
@@ -844,116 +902,131 @@ class View():
 
     def update_lines(self, i = 1):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
-
-        self.current_frame_time = timeit.default_timer() - self.start
-        self.current_frame_avg_queue.append(self.current_frame_time)
-        if len(self.current_frame_avg_queue) > 10:
-            self.current_frame_avg_queue.pop(0)
-        self.start = timeit.default_timer()
-
-        # use this block for clearing and redrawing.
-        # clearing and redrawing is super SLOW, mind
-        self.frame_reset()
+        def fps():
+            self.current_frame_time = timeit.default_timer() - self.start
+            self.current_frame_avg_queue.append(self.current_frame_time)
+            if len(self.current_frame_avg_queue) > 10:
+                self.current_frame_avg_queue.pop(0)
+            self.start = timeit.default_timer()
+        fps()
 
         if(self.arm_attached == True):
-            self.textconnection.set_visible(False)
-            packet_received = False
+            self.textdisconnected.set_visible(False)
+            # first try reading principal data (stylus location and pose)
             try:
-                self.arm.ser.write(('>').encode('utf-8'))
-                while(not packet_received and self.arm.ser.in_waiting):
+                if(self.tip_packet_cts == True):
+                    self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: endpoints, thetas, and calculated tip position. 
+                    self.tip_packet_cts = False                     # last command was tip position, so we'll be looking for that.
+                    
+                while((not self.tip_packet_cts) and self.arm.ser.in_waiting):            
                     try:
                         serial_rx = self.arm.ser.readline()
-                        try:
-                            data = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
-                            if(data.startswith("XYZ")):
-                                xyz = data.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
-                                #print(xyz)
-                                dx = float(xyz[1])
-                                dy = float(xyz[2])
-                                dz = float(xyz[3])    
-                                dirx = float(xyz[4]) 
-                                diry = float(xyz[5])
-                                dirz = float(xyz[6])
-                                packet_received = True
+                        indata = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
+                        if(indata.startswith("XYZ")):
+                            xyz = indata.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
+                            dx = float(xyz[1])
+                            dy = float(xyz[2])
+                            dz = float(xyz[3])    
+                            dirx = float(xyz[4]) 
+                            diry = float(xyz[5])
+                            dirz = float(xyz[6])
+                            # print(xyz)
+                            self.data.append_xyz(dx,dy,dz,dirx,diry,dirz)
+                            self.tip_packet_cts = True
+                            
+                        elif(indata.startswith("THETA")):
+                            enc = indata.split(",")       # Data format: encoder 1,2,3,4,5
+                            for i in range(NUM_ENCODERS):
+                                self.data.joints[i] = float(enc[i+1])
+                            # print("joints: " + str(self.data.joints))
+                            self.joint_packet_cts = True
 
-                                self.data.x.append(dx)
-                                self.data.y.append(dy)
-                                self.data.z.append(dz)
-                                self.data.tipx.append(dx)
-                                self.data.tipy.append(dy)
-                                self.data.tipz.append(dz)
-                                self.data.dirx = dirx*np.pi/180
-                                self.data.diry = diry*np.pi/180
-                                self.data.dirz = dirz*np.pi/180
-
-                                if len(self.data.x) > self.data.path_points:        # remove the oldest point to limit list length
-                                    self.data.x.pop(0)
-                                    self.data.y.pop(0)
-                                    self.data.z.pop(0)
-
-                                if len(self.data.tipx) > self.data.tip_points:        # remove the oldest point to limit list length
-                                    self.data.tipx.pop(0)
-                                    self.data.tipy.pop(0)
-                                    self.data.tipz.pop(0)
-
-                                # Update all artists and text
-                                # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
-                                self.tip = self.ax.plot(dx,dy,dz,color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
-                                
-                                # The text is rather clumsily rendered.Takes a lot of lines!
-                                if(self.showPath is True):
-                                    self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color=styluscolor, alpha = 0.2, linewidth=1)
-                                if(self.showcsv is True):
-                                    self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
-                                if(self.showstylus is True):
-                                    self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz, conecolor = styluscolor)
-
-                                if(self.point2plane.plane_ready):
-                                    self.plane = self.draw_ref_plane()
-                                    if(self.point2plane.P_plane_loaded and self.showp2plane):
-                                        self.draw_point_plane_dist(P2Plcolor)
-                                        self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
-                                    else:
-                                        self.textpointplane.set_text("")
-                                    self.textplanerefpoints.set_text("")
-                                else:
-                                    self.textpointplane.set_text("")
-                                    self.textplanerefpoints.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
-
-                                if(self.point2plane.P_ref_loaded and self.showp2p):
-                                    self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
-                                    if(self.point2plane.P_point_loaded):
-                                        self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
-                                        if(self.showp2p):
-                                            self.draw_point_point_dist(P2Pcolor)
-                                            self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
-                                    else:
-                                        self.textpointpoint.set_text("")
-                                        self.textpoint2.set_text("")
-                                else:
-                                    self.textpoint1.set_text("")
-                                    self.textpoint2.set_text("")
-                                    self.textpointpoint.set_text("")
-                                
-
-                                #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
-                                self.textreadout.set_text("(X, Y, Z): ({0:7.2f},{1:7.2f},{2:7.2f}) mm\n($\\phi$, $\\theta$, $\\psi$): ({3:7.2f},{4:7.2f},{5:7.2f}) $\degree $  ".format(dx, dy, dz, dirx, diry, dirz)) 
-                                self.textcloudpoints.set_text("{:d} points in point cloud".format(len(self.data.savex)))
-                                self.textfps.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
-                            else:
-                                pass
-                        except UnicodeDecodeError:
-                            pass
+                        elif(indata.startswith("END")):
+                            endpoints = indata.split(",")       # Data format: endpoint x0,y0,z0,x1,y1,z1, ... x5,y5,z5
+                            for i in range(NUM_ENCODERS+1):
+                                self.data.endpointx[i] = float(endpoints[i*3 + 1])
+                                self.data.endpointy[i] = float(endpoints[i*3 + 2])
+                                self.data.endpointz[i] = float(endpoints[i*3 + 3])
+                            # print("endpointx: " + str(self.data.endpointx))
+                            self.endpoint_packet_cts = True
+            
+                    except UnicodeDecodeError:
+                        pass
+                
                     except serial.SerialException:     # couldn't read - lost connection
-                        self.arm_attached = False
+                        # self.arm_attached = False
+                        self.detach_arm()
                         print(">Read failed. Restart program or scan again")
                         break
-            except serial.SerialException:                                         # couldn't write - lost connection
-                self.arm_attached = False
+            except:                                         # couldn't write - lost connection
+                # self.arm_attached = False
+                self.detach_arm()
                 print(">Write failed. Restart program or scan again")
                 pass
+
+            try: 
+                if(self.tip_packet_cts):
+                    # use this block for clearing and redrawing.
+                    # clearing and redrawing is super SLOW, mind
+                    self.frame_reset()
+
+                    # Update all artists and text
+                    # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
+                    self.tip = self.ax.plot(dx,dy,dz,color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
+                    if(self.showPath is True):
+                        self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color=styluscolor, alpha = 0.2, linewidth=1)
+                    if(self.showcsv is True):
+                        self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
+                    if(self.showstylus is True):
+                        self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz, conecolor = styluscolor)
+                    
+                     # Update robot display
+                    self.robot.set_angles(self.data.joints, base_included = True)
+                    self.robot_render.draw_links()
+                    # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
+
+                    # The text is rather clumsily rendered.Takes a lot of lines!
+                    if(self.point2plane.plane_ready):
+                        self.plane = self.draw_ref_plane()
+                        if(self.point2plane.P_plane_loaded and self.showp2plane):
+                            self.draw_point_plane_dist(P2Plcolor)
+                            self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
+                        else:
+                            self.textpointplane.set_text("")
+                        self.textplanerefpoints.set_text("")
+                    else:
+                        self.textpointplane.set_text("")
+                        self.textplanerefpoints.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
+
+                    if(self.point2plane.P_ref_loaded and self.showp2p):
+                        self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
+                        if(self.point2plane.P_point_loaded):
+                            self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
+                            if(self.showp2p):
+                                self.draw_point_point_dist(P2Pcolor)
+                                self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
+                        else:
+                            self.textpointpoint.set_text("")
+                            self.textpoint2.set_text("")
+                    else:
+                        self.textpoint1.set_text("")
+                        self.textpoint2.set_text("")
+                        self.textpointpoint.set_text("")
+                    
+                    #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
+                    self.textreadout.set_text("(X, Y, Z): ({0:8.3f},{1:8.3f},{2:8.3f}) mm \n($\\phi$, $\\theta$, $\\psi$): ({3:8.3f},{4:8.3f},{5:8.3f}) rad ".format(dx, dy, dz, dirx, diry, dirz)) 
+                    self.textcloudpoints.set_text("{:d} points in point cloud".format(len(self.data.savex)))
+                    self.textfps.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
+            except:
+                self.detach_arm()
+                print(">Data error. Restart program or scan again")
+                pass
+
         else:
-            self.textconnection.set_visible(True)
+            self.textdisconnected.set_visible(True)
+
+
+
 
 class GUI():
     def __init__(self, view = None):
@@ -964,11 +1037,12 @@ class GUI():
         self.UPPER_BOUND = 400
 
         self.title = "Microscribe 3D demo"
-        #root = tk.Tk()
+        #root = tk.Tk() 
+        #root.configure(bg = 'black')
         root = tb.Window(themename='cyborg')
         root.title(self.title + " (no device connected)")
         root.minsize(800,800)
-        #root.configure(bg = 'black')
+       
 
         menubar = Menu(root)
         filemenu = Menu(menubar, tearoff=0)
@@ -1114,14 +1188,12 @@ class GUI():
     def find_microscribe(self,listports = ""):
         target = None
         for port in listports:
-            s = serial.Serial(port, baudrate = 57600)
+            s = serial.Serial(port, baudrate = 115200)
             print(">Checking for Microscribe interface device on " + port)
             if(s.is_open): 
                 s.close()
             s.open()
-            # time_start = timeit.default_timer()
-            # while(timeit.default_timer() - time_start < 1.0):
-            #     self.root.update()
+            time.sleep(1)                   # if the Arduino just came up, we need to give it some time.
             s.write('i'.encode('utf-8'))
             timeout = 0.5
             time_start = timeit.default_timer()
@@ -1146,8 +1218,10 @@ class GUI():
 
     # Connects to available Microscribe interface automatically
     # Assumes only one is connected. 
+    # Returns false if unsuccessful. True if successful
     def auto_scan(self):
         # Search all COM ports for a response
+        success = False
         print(">Scanning serial ports:")
         print(self.serial_ports())
 
@@ -1162,8 +1236,10 @@ class GUI():
             if(result == True):
                 self.view.attach_arm(arm) 
                 print(">Arm attached successfully")
+                success = True
             else:
                 print(">Microscribe timed out.")
+                success = False
             
             # if arm was attached, then we can start plotting. If not, standby with empty plot.
             if(app.view.arm_attached == True):
@@ -1171,14 +1247,15 @@ class GUI():
                 arm.ser.reset_output_buffer()
                 print(">Setting datastream mode")
                 arm.send_query('q')
-                self.view.arm.ser.reset_input_buffer()
-                self.view.arm.ser.reset_output_buffer()
                 self.root.title(self.title + " ({})".format(portname))
+                
 
         except (IndexError, serial.SerialException):
             print(">Auto-scan unsuccessful.")
+            success = False
             # exit()
-            pass
+        
+        return success
 
 
     def home_arm(self):
@@ -1233,6 +1310,9 @@ class GUI():
         self.update = not self.update
         if(self.view.arm_attached):
             self.view.arm.ser.reset_input_buffer()
+            self.view.tip_packet_cts = True
+            self.view.joint_packet_cts = True
+            self.view.endpoint_packet_cts = True
 
 
     def toggle_console(self):
