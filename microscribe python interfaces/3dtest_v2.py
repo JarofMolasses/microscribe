@@ -1,7 +1,14 @@
-
 # TODO:
-# Implement background computation in separate thread (e.g. Serial, matrix manipulation). This may be best to move off of tkinter
-# We have pushed matplotlib's 3D capabilities pretty much as far as they'll go. We should move to a real 3D engine (MayaVi, pyQtgraph, three.js)
+# Consider vector graphics option for speed. 
+# We need to update just the artists and not the axes every time. cla() is SUPER SLOW
+# Uses way too much power. around 20W on a 12700k.
+# Extract machine parameters automatically during autoscan(). Currently hardcoded
+# Stop calculating matrices on Arduino and just report angles for numpy
+# Implement background computation in separate thread (e.g. Serial, matrix manipulation). DONE
+
+# TODO but next time.
+# Once we get the machine params and perform calculations in numpy, then we can replace the Arduino with a simple FT232 serial-USB
+# We have pushed matplotlib's 3D capabilities pretty much as far as they'll go. We can move to something actually resembling a 3D engine (vispy, plotly, pyvista, MayaVi, pyQtgraph, three.js...)
 
 import numpy as np
 # from scipy.spatial.transform import Rotation as R
@@ -12,7 +19,10 @@ import random
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-mpl.use("Qt5Agg")                        # FIXES THE .set() method on labels. using .set() on checkbuttons is still broken 
+
+#mpl.use("Agg")
+mpl.use("Qt5Agg")                        # Qt5 FIXES THE .set() method on labels. using .set() on checkbuttons is still broken 
+import mpl_toolkits.mplot3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.axes3d import _Quaternion
@@ -31,9 +41,12 @@ import timeit
 import serial
 import sys
 import glob
-import types
 
 from DHjoints import Robot,Link,LinkRender
+
+from threading import Thread
+from queue import Queue
+
 
 planecolor = 'plum'
 P2Pcolor = 'slategrey'
@@ -44,7 +57,17 @@ consolecolor = 'slategrey'
 styluscolor = 'aquamarine'
 tipcolor = 'aquamarine'
 cloudcolor = 'red'
+
 NUM_ENCODERS = 5
+
+START_WORKER = 'start'
+WORKER_RUNNING = 'started'
+STOP_WORKER = 'stop'
+WORKER_STOPPED = 'stopped'
+HOME_ARM = 'home'
+serial_worker_in_queue = Queue()           # shared queue to issue commands to serial thread
+serial_worker_out_queue = Queue()             # shared queue to get data from serial thread 
+# plot_worker_in_queue = Queue()
 
 # Storing keybinds for easy remapping later
 class Keys:
@@ -56,6 +79,7 @@ class Keys:
     xy = 'x'
     xz = 'y'
     yz = 'z'
+    freeze = 'f'
 
 class PrintLogger(object):  # create file like object
 
@@ -226,7 +250,7 @@ class PlotData():
     def __init__(self):
         self.path_points = 64                         # max number of points to draw path of tip 
         self.tip_points = 1                           # max number of points to show only the tip location 
-        self.csv_points = 10000                        # max number of points in csv point cloud. This is pretty much as high as we can go until I optimize things 
+        self.csv_points = 2000                        # max number of points in csv point cloud. This is pretty much as high as we can go until I optimize things 
                                                       # It may require PyQT to push this significantly higher.
         self.x = []
         self.y = []
@@ -237,25 +261,16 @@ class PlotData():
         self.savex = []
         self.savey = []
         self.savez = []
-        self.dirx = 0
-        self.diry = 0
-        self.dirz = 0
-        self.x_offset = 0
-        self.y_offset = 0
-        self.z_offset = 0
+        self.dirx = []
+        self.diry = []
+        self.dirz = []
 
-        self.endpointx = [None]*(NUM_ENCODERS+1)
-        self.endpointy = [None]*(NUM_ENCODERS+1)
-        self.endpointz = [None]*(NUM_ENCODERS+1)
         self.joints = [None]*(NUM_ENCODERS)
 
     def update_joints(self,joints):
         if(len(joints) == NUM_ENCODERS):
             self.joints = joints
     
-    def update_endpoints(self, endpoints):
-        pass
-
     def append_xyz(self, dx, dy, dz, dirx, diry, dirz):
         self.x.append(dx)
         self.y.append(dy)
@@ -263,9 +278,9 @@ class PlotData():
         self.tipx.append(dx)
         self.tipy.append(dy)
         self.tipz.append(dz)
-        self.dirx = dirx
-        self.diry = diry
-        self.dirz = dirz
+        self.dirx.append(dirx)
+        self.diry.append(diry)
+        self.dirz.append(dirz)
 
         if len(self.x) > self.path_points:        # remove the oldest point to limit list length
             self.x.pop(0)
@@ -276,6 +291,11 @@ class PlotData():
             self.tipx.pop(0)
             self.tipy.pop(0)
             self.tipz.pop(0)
+        
+        if len(self.dirx) > 1:
+            self.dirx.pop(0)
+            self.diry.pop(0)
+            self.dirz.pop(0)
 
     def set_num_points(self, num_points):
         self.path_points = num_points
@@ -310,7 +330,6 @@ class Arm():
             self.ser = serial.Serial(portname,115200, timeout=5)       # this should not be hardcoded, obviously
         except:
             pass
-        self.initialized = False
         self.portname = portname
 
     def open(self):
@@ -326,7 +345,7 @@ class Arm():
     def home_arm(self):
         print(">Home arm")
         self.ser.write('h'.encode('utf-8'))
-        self.wait_for_response()
+        # self.wait_for_response()
     
     def send_query(self, command : int):
         print(">Sent query: {}".format(command))
@@ -342,20 +361,20 @@ class Arm():
     def wait_for_init(self):
         timeout = 3.0
         time_start = timeit.default_timer()
+        initialized = False
         if(self.ser.is_open):
             print(">Waiting for hardware initialization...")
             self.send_command('r')
-            while(self.initialized is False and (timeit.default_timer()-time_start < timeout)):        # add a timeout
+            while(initialized is False and (timeit.default_timer()-time_start < timeout)):        # add a timeout
                 serial_rx= self.ser.readline().decode('utf-8').rstrip('\n')
                 if(not serial_rx.isspace()):
                     print(serial_rx)
                 if "READY" in serial_rx:
                     print(">Arm initialized")
-                    self.initialized = True
+                    initialized = True
                     return True
             print("Timed out waiting for init")
-            return False
-            
+            return False       
 
     def wait_for_response(self):
         timeout = 3.0
@@ -369,109 +388,12 @@ class Arm():
                 return
         print(">Timed out waiting for response")
 
-         
-# I hate the default matplotlib pan and zoom function
-# Ideally, we'd have:
-# 1. Middle mouse rotates
-# 2. Scroll zooms
-# 3. Ctrl + middle mouse pans. 
-# However, it may not be ideal to use the mpl framework to implement the zoom part since I'm not sure I can have it react to the scrollwheel.
-def _custom_on_move(self, event):       # this is intended as a replacement for the Axes3D movement handler. Self refers to Axes3D object.
-    if not self.button_pressed:
-        return
-
-    if self.get_navigate_mode() is not None:
-        # we don't want to rotate if we are zooming/panning
-        # from the toolbar
-        return
-
-    if self.M is None:
-        return
-
-    x, y = event.xdata, event.ydata
-    # In case the mouse is out of bounds.
-    if x is None or event.inaxes != self:
-        return
-
-    dx, dy = x - self._sx, y - self._sy
-    w = self._pseudo_w
-    h = self._pseudo_h
-
-    # Rotation
-    if self.button_pressed in self._rotate_btn:
-        print("Rotating")
-        # rotate viewing point
-        # get the x and y pixel coords
-        if dx == 0 and dy == 0:
-            return
-
-        style = mpl.rcParams['axes3d.mouserotationstyle']
-        if style == 'azel':
-            roll = np.deg2rad(self.roll)
-            delev = -(dy/h)*180*np.cos(roll) + (dx/w)*180*np.sin(roll)
-            dazim = -(dy/h)*180*np.sin(roll) - (dx/w)*180*np.cos(roll)
-            elev = self.elev + delev
-            azim = self.azim + dazim
-            roll = self.roll
-        else:
-            q = _Quaternion.from_cardan_angles(
-                    *np.deg2rad((self.elev, self.azim, self.roll)))
-
-            if style == 'trackball':
-                k = np.array([0, -dy/h, dx/w])
-                nk = np.linalg.norm(k)
-                th = nk / mpl.rcParams['axes3d.trackballsize']
-                dq = _Quaternion(np.cos(th), k*np.sin(th)/nk)
-            else:  # 'sphere', 'arcball'
-                current_vec = self._arcball(self._sx/w, self._sy/h)
-                new_vec = self._arcball(x/w, y/h)
-                if style == 'sphere':
-                    dq = _Quaternion.rotate_from_to(current_vec, new_vec)
-                else:  # 'arcball'
-                    dq = _Quaternion(0, new_vec) * _Quaternion(0, -current_vec)
-
-            q = dq * q
-            elev, azim, roll = np.rad2deg(q.as_cardan_angles())
-
-        # update view
-        vertical_axis = self._axis_names[self._vertical_axis]
-        self.view_init(
-            elev=elev,
-            azim=azim,
-            roll=roll,
-            vertical_axis=vertical_axis,
-            share=True,
-        )
-        self.stale = True
-
-    # Pan
-    elif self.button_pressed in self._pan_btn:
-        # Start the pan event with pixel coordinates
-        px, py = self.transData.transform([self._sx, self._sy])
-        self.start_pan(px, py, 2)
-        # pan view (takes pixel coordinate input)
-        self.drag_pan(2, None, event.x, event.y)
-        self.end_pan()
-
-    # Zoom
-    elif self.button_pressed in self._zoom_btn:
-        # zoom view (dragging down zooms in)
-        scale = h/(h - dy)
-        self._scale_axis_limits(scale, scale, scale)
-
-    # Store the event coordinates for the next time through.
-    self._sx, self._sy = x, y
-    # Always request a draw update at the end of interaction
-    self.get_figure(root=True).canvas.draw_idle()
-
 
 class View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
-        self.arm_attached = False
-
-        if arm is None:
-            arm = Arm()
-        self.arm = arm          # TODO: make arm "detachable", that is, if there is no arm available make it possible to generate an empty View() so that an arm can be attached later.
+        # if arm is None:
+        #     arm = Arm()
+        self.arm = arm          
 
         if plotdata is None:
             plotdata = PlotData()
@@ -490,6 +412,7 @@ class View():
         # 1. add_subplot() or add_axes()
         #self.ax = self.fig.add_subplot(111, projection = "3d")
         self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d')
+        self.ax.set_axis_off()
 
         # 2. add_axes(Axes3D)
         # ax3d = Axes3D(self.fig)
@@ -501,10 +424,11 @@ class View():
         # self.fig.canvas.mpl_connect('key_press_event', self._on_press)
         # self.fig.canvas.mpl_connect('key_release_event', self._on_release)
 
-        self.path = self.ax.plot([],[],[], color=styluscolor, alpha = 0.3, animated=True)
-        self.point_graph, = self.ax.plot([],[],[], color=tipcolor, alpha = 1,linestyle="",markersize=10, marker = '.', animated=True)
-        self.cloud = self.ax.plot([],[],[], color=cloudcolor, alpha = 1,linestyle="",markersize=5, animated=True)
-        self.stylus = self.ax.plot([],[],[], color=styluscolor, alpha = 0.3,animated=True)
+        # Non-robot plotting objects. The robot handles its own objects 
+        # self.path = self.ax.plot([],[],[], color=styluscolor, alpha = 0.3, animated=True)
+        # self.point_graph = self.ax.plot([],[],[], color=tipcolor, alpha = 1,linestyle="",markersize=10, marker = '.', animated=True)
+        # self.cloud = self.ax.plot([],[],[], color=cloudcolor, alpha = 1,linestyle="",markersize=5, animated=True)
+        #self.plot_objects = []
 
         font = 'monospace'
         #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color=indicatorcolor,fontsize=7, name = font)  
@@ -522,6 +446,7 @@ class View():
         self.textdisconnected = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
         self.textdisconnected.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
         
+        self.connected = False
         self.showPath = True
         self.showcsv = True
         self.showstylus = True
@@ -539,9 +464,6 @@ class View():
         self.current_frame_avg_queue = [self.current_frame_time]
         self.start = timeit.default_timer()
 
-        self.tip_packet_cts = True
-        self.joint_packet_cts = True
-
         link0 = Link(fixed = True, draw_frame = True)                                # origin frame
         link1 = Link(parent = link0, D=210.820007)
         link2 = Link(parent = link1, D=-22.250398, A =24.307800, alpha = 1.567824)
@@ -554,6 +476,96 @@ class View():
         self.robot_render = LinkRender(links, ax = self.ax)
 
         self.showrobot = True
+    
+    # Questionable thread safety.... Watch this carefully
+    # The idea is try not to mess with variables outside of the local scope here, other than queues.
+    # We will have to commandeer the arm serial port, but once the connection is established we do not touch the serial port outside of the worker.
+    def serial_worker(self):
+        serial_active = False
+        tip_packet_cts = True
+        current_frame_time = timeit.default_timer()
+        current_frame_avg_queue = [self.current_frame_time]
+        start = timeit.default_timer()
+
+        while(True):
+            try:
+                item = serial_worker_in_queue.get(block=False)
+                if(item is None): # time to die
+                    break
+                elif(item is START_WORKER):
+                    if(self.arm is not None):
+                        print(">Serial worker: running")
+                        tip_packet_cts = True
+                        serial_active = True
+                        serial_worker_out_queue.put(WORKER_RUNNING)
+                elif(item is STOP_WORKER):
+                    print(">Serial worker: stopped") 
+                    serial_active = False
+                    serial_worker_out_queue.put(WORKER_STOPPED)
+                elif(item is HOME_ARM):
+                    print(">Serial worker: home arm")
+                    if(self.arm is not None):
+                        self.arm.home_arm()
+                        tip_packet_cts = True
+            except:
+                # print('Serial task scheduler: got nothing, waiting a while...')
+                pass
+
+            if(serial_active is True):
+                #print("Serial worker is polling now")
+                try:
+                    if(tip_packet_cts == True):
+                        self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: thetas, then calculated tip position. 
+                        tip_packet_cts = False                         # last command was tip position, so we'll be looking for that.
+                    
+                    while((not tip_packet_cts) and self.arm.ser.in_waiting):          
+
+                        # current_frame_time = timeit.default_timer() - start
+                        # self.current_frame_avg_queue.append(current_frame_time)
+                        # if len(self.current_frame_avg_queue) > 10:
+                        #     self.current_frame_avg_queue.pop(0)
+                        # start = timeit.default_timer()
+
+                        try:
+                            serial_rx = self.arm.ser.readline()
+                            indata = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
+                            if(indata.startswith("XYZ")):
+                                xyz = indata.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
+                                dx = float(xyz[1])
+                                dy = float(xyz[2])
+                                dz = float(xyz[3])    
+                                dirx = float(xyz[4]) 
+                                diry = float(xyz[5])
+                                dirz = float(xyz[6])
+                                # print(xyz)
+                                self.data.append_xyz(dx,dy,dz,dirx,diry,dirz)
+                                tip_packet_cts = True
+                                
+                            elif(indata.startswith("THETA")):
+                                enc = indata.split(",")       # Data format: encoder 1,2,3,4,5
+                                for i in range(NUM_ENCODERS):
+                                    self.data.joints[i] = float(enc[i+1])
+                                # print("joints: " + str(self.data.joints))
+                                self.robot.set_angles(self.data.joints, base_offset = True)         
+
+                        except UnicodeDecodeError:
+                            pass
+                    
+                        except serial.SerialException:     # couldn't read - lost connection
+                            self.detach_arm()
+                            print(">Read failed. Restart program or scan again")
+
+                except Exception as e:                                         # couldn't write - lost connection
+                    self.detach_arm()
+                    print(repr(e))
+                    print(">Write failed. Restart program or scan again")
+                    pass
+                pass
+            else:
+                pass
+            time.sleep(0.025) # we've got to let other guys access the data
+
+        print("Exiting serial worker thread")
 
     def _disable_pan(self):
         if(self._enable_drag == True):       
@@ -587,27 +599,23 @@ class View():
 
     def attach_arm(self, arm):
         self.arm = arm
-        self.arm_attached = True
-        self.tip_packet_cts = True
-        self.joint_packet_cts = True
-        self.endpoint_packet_cts = True
         pass
 
     def detach_arm(self):
+        serial_worker_in_queue.put(STOP_WORKER)
         self.arm = None
-        self.arm_attached = False
 
     def xy(self):
         self.ax.view_init(elev=90, azim=-90)
-        self.update_lines()
+        self.update_main_canvas()
 
     def xz(self):
         self.ax.view_init(elev=0, azim=-90)
-        self.update_lines()
+        self.update_main_canvas()
 
     def yz(self):
         self.ax.view_init(elev=0, azim=90)
-        self.update_lines()
+        self.update_main_canvas()
     
     # see: https://sabopy.com/py/matplotlib-3d-37/
     def calculate_cone_const(self, height=15, radius=3, height_ext = 100):
@@ -677,70 +685,70 @@ class View():
 
         return ERot.dot(XYZ)
     
-    # archive
-    # def draw_cone_old(self, ax, x,y,z, dirx,diry,dirz):
-    #     # draw a cone with tip at x,y,z and orientation given by dirx,y,z
+    # archive. We don't do this anymore
+    def draw_cone_old(self, ax, x,y,z, dirx,diry,dirz):
+        # draw a cone with tip at x,y,z and orientation given by dirx,y,z
 
-    #         # generate X (m*n),Y (m*n), Z(m*n) basic cone
-    #         # see: https://sabopy.com/py/matplotlib-3d-37/
-    #         height = 200
-    #         theta = np.linspace(0, 2*np.pi, 20)
-    #         r = np.linspace(0, 20, 20)
-    #         t,R =np.meshgrid(theta, r)
+            # generate X (m*n),Y (m*n), Z(m*n) basic cone
+            # see: https://sabopy.com/py/matplotlib-3d-37/
+            height = 200
+            theta = np.linspace(0, 2*np.pi, 20)
+            r = np.linspace(0, 20, 20)
+            t,R =np.meshgrid(theta, r)
 
-    #         X = np.array(R*np.cos(t))
-    #         Y = np.array(R*np.sin(t))
-    #         Z = np.array(R*height/r.max())
+            X = np.array(R*np.cos(t))
+            Y = np.array(R*np.sin(t))
+            Z = np.array(R*height/r.max())
 
-    #         print("Size of Z:")
-    #         print(np.shape(Z))
+            print("Size of Z:")
+            print(np.shape(Z))
 
-    #         # basis vectors
-    #         ihat = [1,0,0]
-    #         jhat = [0,1,0]
-    #         khat = [0,0,1]
+            # basis vectors
+            ihat = [1,0,0]
+            jhat = [0,1,0]
+            khat = [0,0,1]
 
-    #         # calculate new rotation matrices
-    #         x_rot_M = self.rotation_matrix(ihat, dirx)
-    #         y_rot_M = self.rotation_matrix(jhat, diry)
-    #         z_rot_M = self.rotation_matrix(khat, dirz)
+            # calculate new rotation matrices
+            x_rot_M = self.rotation_matrix(ihat, dirx)
+            y_rot_M = self.rotation_matrix(jhat, diry)
+            z_rot_M = self.rotation_matrix(khat, dirz)
 
-    #         Xprime = X.copy()                       # if you don't use a copy on array, the new object will point to the same memory location. 
-    #         Yprime = Y.copy()
-    #         Zprime = Z.copy()
+            Xprime = X.copy()                       # if you don't use a copy on array, the new object will point to the same memory location. 
+            Yprime = Y.copy()
+            Zprime = Z.copy()
 
-    #         # slice by slice rotation of the cone
-    #         # clumsy for loops because of the 2D X, Y, Z arrays used to render a good cone. This could be much much better
-    #         for i in range(len(Xprime[:][1])):
-    #             XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
-    #             # print('X:')
-    #             # print(np.shape(X[i][:]))
-    #             # print(X[i][:])
-    #             # print('XYZ concatenated:')
-    #             # print(XYZprime)
-    #             Xprime[i][:] = np.dot(x_rot_M[0][:],XYZprime)
-    #             Yprime[i][:] = np.dot(x_rot_M[1][:],XYZprime)
-    #             Zprime[i][:] = np.dot(x_rot_M[2][:],XYZprime)
+            # slice by slice rotation of the cone
+            # clumsy for loops because of the 2D X, Y, Z arrays used to render a good cone. This could be much much better
+            for i in range(len(Xprime[:][1])):
+                XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
+                # print('X:')
+                # print(np.shape(X[i][:]))
+                # print(X[i][:])
+                # print('XYZ concatenated:')
+                # print(XYZprime)
+                Xprime[i][:] = np.dot(x_rot_M[0][:],XYZprime)
+                Yprime[i][:] = np.dot(x_rot_M[1][:],XYZprime)
+                Zprime[i][:] = np.dot(x_rot_M[2][:],XYZprime)
 
-    #         for i in range(len(X[:][1])):
-    #             XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
-    #             Xprime[i][:] = np.dot(y_rot_M[0][:],XYZprime)
-    #             Yprime[i][:] = np.dot(y_rot_M[1][:],XYZprime)
-    #             Zprime[i][:] = np.dot(y_rot_M[2][:],XYZprime)
+            for i in range(len(X[:][1])):
+                XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
+                Xprime[i][:] = np.dot(y_rot_M[0][:],XYZprime)
+                Yprime[i][:] = np.dot(y_rot_M[1][:],XYZprime)
+                Zprime[i][:] = np.dot(y_rot_M[2][:],XYZprime)
 
-    #         for i in range(len(X[:][1])):
-    #             XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
-    #             Xprime[i][:] = np.dot(z_rot_M[0][:],XYZprime)
-    #             Yprime[i][:] = np.dot(z_rot_M[1][:],XYZprime)
-    #             Zprime[i][:] = np.dot(z_rot_M[2][:],XYZprime)
+            for i in range(len(X[:][1])):
+                XYZprime = np.stack( [Xprime[i][:], Yprime[i][:], Zprime[i][:]] , axis = 0)
+                Xprime[i][:] = np.dot(z_rot_M[0][:],XYZprime)
+                Yprime[i][:] = np.dot(z_rot_M[1][:],XYZprime)
+                Zprime[i][:] = np.dot(z_rot_M[2][:],XYZprime)
 
-    #         # print("X: ")
-    #         # print(X.ctypes.data)
-    #         # print("Xprime: ")
-    #         # print(Xprime.ctypes.data)
+            # print("X: ")
+            # print(X.ctypes.data)
+            # print("Xprime: ")
+            # print(Xprime.ctypes.data)
 
-    #         graph = ax.plot_surface(Xprime+x, Yprime+y, Zprime+z,alpha=0.35, cmap=cm.GnBu)          
-    #         return graph
+            graph = ax.plot_surface(Xprime+x, Yprime+y, Zprime+z,alpha=0.35)          
+            return graph
 
     def rotation_matrix(self, axis, theta):
     #General purpose rotation matrix with single angle
@@ -770,6 +778,7 @@ class View():
         
             threshold = 0.5
             A,B,C,D = self.point2plane.ref_coef
+            graph = None
 
             # three cases, computation of X,Y,Z meshes needs to be different when coefficients near 0
             if(np.abs(C) > threshold):
@@ -778,21 +787,21 @@ class View():
                 Z = -(A*X + B*Y - D)/C
                 #print(Z)
                 graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
-                return graph
             elif(np.abs(A) > threshold):
                 Y = np.array([ymin, ymin, ymax, ymax])
                 Z = np.array([zmin, zmax, zmin, zmax])
                 X = -(B*Y + C*Z - D)/A
                 graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
-                return graph
             elif(np.abs(B) > threshold):
                 X = np.array([xmin, xmin, xmax, xmax])
                 Z = np.array([zmin, zmax, zmin, zmax])
                 Y = -(A*X + C*Z - D)/B
                 graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
-                return graph
+            return graph
         else:
             pass
+    
+            
 
     def draw_point_point_dist(self,linecolor = 'green'):
         if(self.point2plane.P_ref_loaded and self.point2plane.P_point_loaded):
@@ -810,12 +819,45 @@ class View():
         else:
             pass
 
-    def draw_endpoints(self, linecolor = 'blue'):
-        self.ax.plot(self.data.endpointx[0:NUM_ENCODERS], self.data.endpointy[0:NUM_ENCODERS], self.data.endpointz[0:NUM_ENCODERS], color = linecolor, marker = 'o')
-        pass
+    def remove_plots(self):
+        #print("Plot objects list:")
+        #print(self.plot_objects)
+        for i in range(len(self.plot_objects)):
+            plot_object = self.plot_objects[i]
 
+            # print("Deleting link %i index %i" % (link_index, i))
+            # print(plot_object)
+            if(plot_object is not None):
+                # Try to delete surface
+                if(type(plot_object) is mpl_toolkits.mplot3d.art3d.Poly3DCollection or type(plot_object) is mpl_toolkits.mplot3d.art3d.Line3DCollection):
+                    try:
+                        plot_object.remove()          # this works for 3D Surface (poly3Dcollection)
+                        # print("Success")
+                    except Exception as e:
+                        print("couldn't delete 3DCollection")
+                        print (repr(e))
+                        pass
+                
+                else:
+                    # Try to delete line (unnecessary if using set_3d to update)
+                    try: 
+                        plot_line_object = plot_object[0]
+                        if(type(plot_line_object) is mpl_toolkits.mplot3d.art3d.Line3D):
+                            try: 
+                                # print("Plot object:")
+                                # print(self.link_plots[index][i])
+                                plot_line_object.remove()       # this works for 3D plots (3D Lines)
+                                # print("Success")
+                                continue
+                            except Exception as e:
+                                print("couldn't delete Line3D")
+                                print(repr(e))
+                                pass
+                    except:
+                        pass
+            
     def frame_reset(self):
-        # running this every time is a very slow way to animate. But. It is fine.
+        # running this every time is a very slow way to animate.
         # depending on the orientation hide some labels
         # From the top down, don't show z labels or ticks
         # From the XZ, don't show y labels or ticks
@@ -826,24 +868,25 @@ class View():
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
         self.ax.cla()
+        self.ax.set_axis_off()              # Huge savings from this.
         self.ax.set_xlim3d(curxlim3d)
         self.ax.set_ylim3d(curylim3d)
         self.ax.set_zlim3d(curzlim3d)
 
-        if(self.ax.elev < 70 and self.ax.elev > -70):
-            self.ax.set_zlabel("Z (mm)", color ='grey')         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
-        else:
-            self.ax.set_zticks([])
+        # if(self.ax.elev < 70 and self.ax.elev > -70):
+        #     self.ax.set_zlabel("Z (mm)", color ='grey')         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
+        # else:
+        #     self.ax.set_zticks([])
 
-        if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
-            self.ax.set_xlabel("X (mm)", color ='grey')
-        else:
-            self.ax.set_xticks([])
+        # if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
+        #     self.ax.set_xlabel("X (mm)", color ='grey')
+        # else:
+        #     self.ax.set_xticks([])
 
-        if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
-            self.ax.set_ylabel("Y (mm)", color = 'grey')
-        else:
-            self.ax.set_yticks([])
+        # if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
+        #     self.ax.set_ylabel("Y (mm)", color = 'grey')
+        # else:
+        #     self.ax.set_yticks([])
   
     def init_plot(self):
         print(">Init plot")
@@ -897,131 +940,115 @@ class View():
     def toggle_stylus(self):
         self.showstylus = not self.showstylus
 
-    def update_lines(self, i = 1):
+    # Matplotlib is not thread safe :(((
+    # def plot_worker(self):
+    #     plot_active = False
+    #     while(True):
+    #         try:
+    #             item = plot_worker_in_queue.get(block = False)
+    #             if(item == START_WORKER):
+    #                 plot_active = True
+    #             elif(item == STOP_WORKER):
+    #                 plot_active = False
+    #             elif(item is None):
+    #                 break
+    #         except:
+    #             pass
+                
+    #         if(plot_active):
+    #             self.update_main_canvas()
+
+    #         time.sleep(0.05)
+
+    def update_main_canvas(self, i = 1):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
+        try:
+            item = serial_worker_out_queue.get(block = False)
+            if(item == WORKER_RUNNING):
+                self.connected = True
+            elif(item == WORKER_STOPPED):
+                self.connected = False
+        except:
+            pass
 
-        if(self.arm_attached == True):
+        if(self.connected):
             self.textdisconnected.set_visible(False)
-            # first try reading principal data (stylus location and pose)
-            try:
-                if(self.tip_packet_cts == True):
-                    self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: thetas, then calculated tip position. 
-                    self.tip_packet_cts = False                     # last command was tip position, so we'll be looking for that.
-                
-                if((not self.tip_packet_cts) and self.arm.ser.in_waiting):            # You can make this a while loop improve framerate... at the cost of taking up GUI processing time. If on a single thread, best to sacrifice update rate.
-                    def fps():
-                        self.current_frame_time = timeit.default_timer() - self.start
-                        self.current_frame_avg_queue.append(self.current_frame_time)
-                        if len(self.current_frame_avg_queue) > 10:
-                            self.current_frame_avg_queue.pop(0)
-                        self.start = timeit.default_timer()
-                    fps()
-                    try:
-                        serial_rx = self.arm.ser.readline()
-                        indata = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
-                        if(indata.startswith("XYZ")):
-                            xyz = indata.split(",")       # Data format for Arduino: X Y Z alpha beta gamma (coords, stylus angles)
-                            dx = float(xyz[1])
-                            dy = float(xyz[2])
-                            dz = float(xyz[3])    
-                            dirx = float(xyz[4]) 
-                            diry = float(xyz[5])
-                            dirz = float(xyz[6])
-                            # print(xyz)
-                            self.data.append_xyz(dx,dy,dz,dirx,diry,dirz)
-                            self.tip_packet_cts = True
-                            
-                        elif(indata.startswith("THETA")):
-                            enc = indata.split(",")       # Data format: encoder 1,2,3,4,5
-                            for i in range(NUM_ENCODERS):
-                                self.data.joints[i] = float(enc[i+1])
-                            # print("joints: " + str(self.data.joints))
-                            self.joint_packet_cts = True
-
-                        elif(indata.startswith("END")):
-                            endpoints = indata.split(",")       # Data format: endpoint x0,y0,z0,x1,y1,z1, ... x5,y5,z5
-                            for i in range(NUM_ENCODERS+1):
-                                self.data.endpointx[i] = float(endpoints[i*3 + 1])
-                                self.data.endpointy[i] = float(endpoints[i*3 + 2])
-                                self.data.endpointz[i] = float(endpoints[i*3 + 3])
-                            # print("endpointx: " + str(self.data.endpointx))
-                            self.endpoint_packet_cts = True
-            
-                    except UnicodeDecodeError:
-                        pass
-                
-                    except serial.SerialException:     # couldn't read - lost connection
-                        # self.arm_attached = False
-                        self.detach_arm()
-                        print(">Read failed. Restart program or scan again")
-            except:                                         # couldn't write - lost connection
-                # self.arm_attached = False
-                self.detach_arm()
-                print(">Write failed. Restart program or scan again")
-                pass
 
             try: 
-                if(self.tip_packet_cts):
-                    # use this block for clearing and redrawing.
-                    # clearing and redrawing is super SLOW, mind
-                    self.frame_reset()
+                def fps():
+                    self.current_frame_time = timeit.default_timer() - self.start
+                    self.current_frame_avg_queue.append(self.current_frame_time)
+                    if len(self.current_frame_avg_queue) > 10:
+                        self.current_frame_avg_queue.pop(0)
+                    self.start = timeit.default_timer()
+                fps()
 
-                    # Update all artists and text
-                    # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
-                    self.tip = self.ax.plot(dx,dy,dz,color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
-                    if(self.showPath is True):
-                        self.path = self.ax.plot(self.data.x,self.data.y,self.data.z, color=styluscolor, alpha = 0.2, linewidth=1)
-                    if(self.showcsv is True):
-                        self.cloud = self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
-                    if(self.showstylus is True):
-                        self.stylus = self.draw_cone_euler(self.ax, self.data.tipx,self.data.tipy,self.data.tipz, self.data.dirx,self.data.diry,self.data.dirz, conecolor = styluscolor)
-                    if(self.showrobot is True):
-                        # Update robot display
-                        self.robot.set_angles(self.data.joints, base_offset = True)
-                        self.robot_render.draw_links()
-                        # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
+                # use this block for clearing and redrawing.
+                # clearing and redrawing is super SLOW, mind
+                self.frame_reset()
 
-                    # The text is rather clumsily rendered.Takes a lot of lines!
-                    if(self.point2plane.plane_ready):
-                        self.plane = self.draw_ref_plane()
-                        if(self.point2plane.P_plane_loaded and self.showp2plane):
-                            self.draw_point_plane_dist(P2Plcolor)
-                            self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
-                        else:
-                            self.textpointplane.set_text("")
-                        self.textplanerefpoints.set_text("")
+                #self.remove_plots()
+                #self.plot_objects = []
+
+                # Update all artists and text
+                # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
+                if(self.showrobot is True):
+                    # Update robot display
+                    self.robot_render.draw_links()
+                    # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
+                if(self.showstylus is True):
+                    #self.stylus = self.draw_cone_euler(self.ax, self.data.tipx[0],self.data.tipy[0],self.data.tipz[0], self.data.dirx[0],self.data.diry[0],self.data.dirz[0], conecolor = styluscolor)
+                    self.robot_render.draw_stylus()
+
+                # #self.tip = self.ax.plot(self.data.x[-1],self.data.y[-1],self.data.z[-1],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
+                self.ax.plot(self.robot.get_end_effector_endpoint()[0],self.robot.get_end_effector_endpoint()[1],self.robot.get_end_effector_endpoint()[2],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
+                
+                if(self.showPath is True):
+                    self.ax.plot(self.data.x,self.data.y,self.data.z, color=styluscolor, alpha = 0.2, linewidth=1)
+                if(self.showcsv is True):
+                    self.ax.plot(self.data.savex, self.data.savey, self.data.savez, linestyle="", color=cloudcolor, marker = '.', alpha=1, markersize=3)
+
+                # The text is rather clumsily rendered.Takes a lot of lines!
+                if(self.point2plane.plane_ready):
+                    self.draw_ref_plane()
+                    if(self.point2plane.P_plane_loaded and self.showp2plane):
+                        self.draw_point_plane_dist(P2Plcolor)
+                        self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
                     else:
                         self.textpointplane.set_text("")
-                        self.textplanerefpoints.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
+                    self.textplanerefpoints.set_text("")
+                else:
+                    self.textpointplane.set_text("")
+                    self.textplanerefpoints.set_text("{:d} reference points defined".format(self.point2plane._plane_input_index))
 
-                    if(self.point2plane.P_ref_loaded and self.showp2p):
-                        self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
-                        if(self.point2plane.P_point_loaded):
-                            self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
-                            if(self.showp2p):
-                                self.draw_point_point_dist(P2Pcolor)
-                                self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
-                        else:
-                            self.textpointpoint.set_text("")
-                            self.textpoint2.set_text("")
+                if(self.point2plane.P_ref_loaded and self.showp2p):
+                    self.textpoint1.set_text("1: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_ref[0], self.point2plane.P_ref[1], self.point2plane.P_ref[2]))
+                    if(self.point2plane.P_point_loaded):
+                        self.textpoint2.set_text("2: ({0:7.2f},{1:7.2f},{2:7.2f})".format(self.point2plane.P_point[0], self.point2plane.P_point[1], self.point2plane.P_point[2]))
+                        if(self.showp2p):
+                            self.draw_point_point_dist(P2Pcolor)
+                            self.textpointpoint.set_text("Point to point: {:>7.3f} mm". format(self.point2plane.d_point_point))
                     else:
-                        self.textpoint1.set_text("")
-                        self.textpoint2.set_text("")
                         self.textpointpoint.set_text("")
-                    
-                    #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
-                    self.textreadout.set_text("(X, Y, Z): ({0:8.3f},{1:8.3f},{2:8.3f}) mm \n($\\phi$, $\\theta$, $\\psi$): ({3:8.3f},{4:8.3f},{5:8.3f}) rad ".format(dx, dy, dz, dirx, diry, dirz)) 
-                    self.textcloudpoints.set_text("{:d} points in point cloud".format(len(self.data.savex)))
-                    self.textfps.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
-            except:
-                self.detach_arm()
-                print(">Data error. Restart program or scan again")
+                        self.textpoint2.set_text("")
+                else:
+                    self.textpoint1.set_text("")
+                    self.textpoint2.set_text("")
+                    self.textpointpoint.set_text("")
+                
+                #self.text1.set_text("{:d} points in path buffer".format(len(self.data.x)))  
+                self.textreadout.set_text("(X, Y, Z): ({0:8.3f},{1:8.3f},{2:8.3f}) mm \n($\\phi$, $\\theta$, $\\psi$): ({3:8.3f},{4:8.3f},{5:8.3f}) rad ".format(self.data.x[-1],self.data.y[-1],self.data.z[-1], self.data.dirx[-1], self.data.diry[-1], self.data.dirz[-1])) 
+                self.textcloudpoints.set_text("{:d} points in point cloud".format(len(self.data.savex)))
+                self.textfps.set_text("Frames/second: {:.2f}".format(1/np.mean(self.current_frame_avg_queue)))
+           
+            except Exception as e:
+                #self.detach_arm()
+                print(repr(e))
+                print(">Waiting for data update...")
                 pass
 
         else:
             self.textdisconnected.set_visible(True)
-
-
 
 
 class GUI():
@@ -1029,8 +1056,6 @@ class GUI():
         if view is None:
             view = View()
         self.view = view
-
-        self.UPPER_BOUND = 400
 
         self.title = "Microscribe 3D demo"
         #root = tk.Tk() 
@@ -1055,11 +1080,11 @@ class GUI():
         viewmenu = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label = 'View', menu = viewmenu)
         viewmenu.add_command(label = 'Reset viewport', command = self.reset_window)
-        viewmenu.add_checkbutton(label = 'Freeze', command = self.toggle_render)
+        viewmenu.add_checkbutton(label = 'Freeze (%s)' % Keys.freeze, command = self.toggle_render)
         viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
-        viewmenu.add_checkbutton(label = 'Hide console', command = self.toggle_console)    
+        viewmenu.add_checkbutton(label = 'Redirect console', command = self.toggle_console)    
         viewmenu.add_checkbutton(label = 'Hide joints', command = self.toggle_robot)
         measModes = Menu(viewmenu, tearoff = 0)
         viewmenu.add_cascade(label = 'Show/hide measurement', menu = measModes)
@@ -1088,9 +1113,9 @@ class GUI():
         self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
         canvas.get_tk_widget().configure(background = 'black', highlightcolor='lightgrey', highlightbackground='lightgrey')         # needed to remove unsightly border 
-        # canvas.mpl_connect('button_press_event', self.view.ax._button_press)
-        # canvas.mpl_connect('button_release_event', self.view.ax._button_release)
-        # canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
+        canvas.mpl_connect('button_press_event', self.view.ax._button_press)
+        canvas.mpl_connect('button_release_event', self.view.ax._button_release)
+        canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
 
         plt.rcParams["keymap.quit"] = []           # Tried to bind Q to save the Q reference point but it's already bound to "quit" the mpl figure. Stupid. Disconnect it here
         plt.rcParams["keymap.back"]=[]              # Actually, I hate all of these. Delete all of them
@@ -1130,16 +1155,25 @@ class GUI():
     
         self.root = root
         self.canvas = canvas
+        self.menu = menubar
         self.update = True
-        self.console_visible = True
+        self.console_visible = False
+        self.connected = False
+
+        self.update_console()
                 
-        def close_window():
-            if(self.view.arm_attached):
+        def close_window():            
+            if(self.ani is not None):
+                self.ani.pause()
+            serial_worker_in_queue.put(None)
+            if(self.view.arm is not None):
                 self.view.arm.send_command('x')
                 self.view.arm.ser.close()
             self.root.quit() # this doesn't seem to normally run and is needed to close properly
             self.root.destroy()
-            return
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            
         self.root.protocol("WM_DELETE_WINDOW", close_window)
 
         self.root.config(menu = menubar)
@@ -1149,6 +1183,11 @@ class GUI():
 
         # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
         # self.ani.pause()
+
+    def update_main_canvas(self, i = 1):
+        self.view.update_main_canvas()
+        self.canvas.draw()             # forcing this to draw makes it slower but the window more responsive orz
+        self.canvas.flush_events()
 
     # see : https://stackoverflow.com/a/14224477
     def serial_ports(self):
@@ -1219,50 +1258,54 @@ class GUI():
     def auto_scan(self):
         # Search all COM ports for a response
         success = False
-        print(">Scanning serial ports:")
-        print(self.serial_ports())
+        if(self.view.arm is None):
+            # pause serial worker if it's goin
+            serial_worker_in_queue.put(STOP_WORKER)
 
-        # if something found, initialize it on the microscribe side, then attach it to the plot so the plot can receive data later
-        portname = ''
-        try:
-            portnames = self.serial_ports()
-            portname = self.find_microscribe(portnames)
-            arm = Arm(portname)
-            arm.open()
-            result = arm.wait_for_init()
-            if(result == True):
-                self.view.attach_arm(arm) 
-                print(">Arm attached successfully")
-                success = True
-            else:
-                print(">Microscribe timed out.")
-                success = False
-            
-            # if arm was attached, then we can start plotting. If not, standby with empty plot.
-            if(app.view.arm_attached == True):
-                arm.ser.reset_input_buffer()
-                arm.ser.reset_output_buffer()
-                print(">Setting datastream mode")
-                arm.send_query('q')
-                self.root.title(self.title + " ({})".format(portname))
+            print(">Scanning serial ports:")
+            print(self.serial_ports())
+
+            # if something found, initialize it on the microscribe side, then attach it to the plot so the plot can receive data later
+            portname = ''
+            try:
+                portnames = self.serial_ports()
+                portname = self.find_microscribe(portnames)
+                arm = Arm(portname)
+                arm.open()
+                result = arm.wait_for_init()
+                if(result == True):
+                    self.view.attach_arm(arm) 
+                    print(">Arm attached successfully")
+                    success = True
+                else:
+                    print(">Microscribe timed out.")
+                    success = False
                 
-
-        except (IndexError, serial.SerialException):
-            print(">Auto-scan unsuccessful.")
-            success = False
-            # exit()
+                # if arm was attached, then we can start collecting data and plotting. If not, standby with empty plot.
+                if(self.view.arm is not None):
+                    arm.ser.reset_input_buffer()
+                    arm.ser.reset_output_buffer()
+                    print(">Setting datastream mode")
+                    arm.send_query('q')
+                    self.root.title(self.title + " ({})".format(portname))
+                    serial_worker_in_queue.put(START_WORKER)
+                    
+            except (IndexError, serial.SerialException):
+                print(">Auto-scan unsuccessful.")
+                success = False
+                # exit()
         
         return success
 
 
     def home_arm(self):
-        if(self.view.arm_attached):
-            self.view.arm.home_arm()
-            self.view.point2plane.clear_point_to_plane()
-            self.view.point2plane.clear_point_to_point()
-            self.view.frame_reset()
-            self.view.update_lines()            # update plot
-            self.canvas.draw()               # send updates to tkinder window
+        serial_worker_in_queue.put(HOME_ARM)
+        # self.view.arm.home_arm()
+        self.view.point2plane.clear_point_to_plane()
+        self.view.point2plane.clear_point_to_point()
+        self.view.frame_reset()
+        self.view.update_main_canvas()            # update plot
+        #self.canvas.draw()               # send updates to tkinder window
         
     def save_csv_points(self):
         defaultname = 'point_cloud_'+time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())+'.csv'
@@ -1278,11 +1321,16 @@ class GUI():
             print("No file chosen. Returning")
             pass
 
+    # Start custom render with threading
+    def render_thread(self):
+        # plot_worker_in_queue.put(START_WORKER)
+        pass
+
     # Start built-in animation. don't use at the same time as the custom render loop
     def render_ani(self):
         try:
-            self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=60, frames=1, blit=False)    
-            self.canvas.draw_idle()
+            self.ani = animation.FuncAnimation(self.view.fig, self.update_main_canvas, interval=60, frames=100, blit=False) 
+            self.canvas.draw_idle()   
             #self.ani.resume()
         except:
             pass
@@ -1290,42 +1338,45 @@ class GUI():
     # Start custom render loop with tkinter scheduler
     def render(self):
         if(self.update):
-            self.view.update_lines()                              # update fig,ax
-            self.canvas.draw()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
-                                                                  # draw() and draw_idle() are options. draw_idle() is faster but draw() seems to behave more nicely with the window
+            self.view.update_main_canvas()                              # update fig,ax
+            self.canvas.draw_idle()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
+                                                                  # draw() and draw() are options. draw() is faster but draw() seems to behave more nicely with the window
+
         self._renderjob = self.root.after(50, self.render)        # schedule updates with .after
 
     def toggle_render(self):
-        
         if(self.update):
             try:
                 self.ani.pause()
+                # plot_worker_in_queue.put(STOP_WORKER)
             except:
                 pass
         else:
             try:
                 self.ani.resume()
+                # plot_worker_in_queue.put(START_WORKER)
             except:
                 pass
-            
         self.update = not self.update
-        if(self.view.arm_attached):
-            self.view.arm.ser.reset_input_buffer()
-            self.view.tip_packet_cts = True
-            self.view.joint_packet_cts = True
-            self.view.endpoint_packet_cts = True
+        # if(self.view.arm_attached):
+        #     self.view.arm.ser.reset_input_buffer()
+        #     self.view.tip_packet_cts = True
 
     def toggle_robot(self):
         self.view.toggle_robot()
         self.view.frame_reset()
-        self.view.update_lines()
-        self.canvas.draw()
+        self.view.update_main_canvas()
+        #self.canvas.draw()
 
     def toggle_console(self):
+        self.console_visible = not self.console_visible
+        self.update_console()
+
+    def update_console(self):
         self.log_label.pack_forget()
         self.log_widget.pack_forget()
         self.canvas.get_tk_widget().pack_forget()
-        if(self.console_visible):
+        if(not self.console_visible):
             self.canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
@@ -1335,58 +1386,56 @@ class GUI():
             self.canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
             sys.stdout = self.logger
             sys.stderr = self.logger
-        self.console_visible = not self.console_visible
-
 
     def toggle_p2p(self):
         self.view.togglep2p()
         self.view.frame_reset()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_main_canvas()            # update plot
+        #self.canvas.draw()               # send updates to tkinder window
 
     def toggle_p2plane(self):
         self.view.togglep2plane()
         self.view.frame_reset()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_main_canvas()            # update plot
+        #self.canvas.draw()               # send updates to tkinder window
 
     def reset_plot(self):
         print(">Reset plot")
         self.view.data.clear_display_data()
         self.view.data.clear_csv_data()
         self.view.frame_reset()
-        self.view.update_lines()            # update plot
-        self.canvas.draw()               # send updates to tkinder window
+        self.view.update_main_canvas()            # update plot
+        #self.canvas.draw()               # send updates to tkinder window
     
     def toggle_path(self):
         self.view.toggle_path()
         self.view.frame_reset()
-        self.view.update_lines()            # update fig, ax
-        self.canvas.draw()                  # send updated fig, ax to tkinder window. otherwise the update will not happen until I interact with the window
+        self.view.update_main_canvas()            # update fig, ax
+        #self.canvas.draw()                  # send updated fig, ax to tkinder window. otherwise the update will not happen until I interact with the window
     
     def toggle_csv(self):
         self.view.toggle_CSV()
         self.view.frame_reset()
-        self.view.update_lines()         
-        self.canvas.draw()     
+        self.view.update_main_canvas()         
+        #self.canvas.draw()     
 
     def toggle_stylus(self):
         self.view.toggle_stylus()
         self.view.frame_reset()
-        self.view.update_lines()
-        self.canvas.draw()
+        self.view.update_main_canvas()
+        #self.canvas.draw()
 
     def reset_window(self):
         self.view.reset_axis_limits()
-        self.view.update_lines()
-        self.canvas.draw()
+        self.view.update_main_canvas()
+        #self.canvas.draw()
 
     def reset_csv(self):
         print(">Reset point cloud")
         self.view.data.clear_csv_data()
         self.view.frame_reset()
-        self.view.update_lines()            
-        self.canvas.draw()              
+        self.view.update_main_canvas()            
+        #self.canvas.draw()              
 
     def reset_meas(self):
         print(">Reset point to plane measurement")
@@ -1394,18 +1443,20 @@ class GUI():
         print(">Reset point to point measurement")
         self.view.point2plane.clear_point_to_point()
         self.view.frame_reset()
-        self.view.update_lines()            
-        self.canvas.draw()              
+        self.view.update_main_canvas()            
+        #self.canvas.draw()              
 
     def save_cloud_point(self, e=None):
-        print(">Saved point to csv")
         self.view.data.savex.append(self.view.data.tipx[0])
         self.view.data.savey.append(self.view.data.tipy[0])
         self.view.data.savez.append(self.view.data.tipz[0])
         if(len(self.view.data.savex)>=self.view.data.csv_points):            # This time, remove the latest point to cap the list length. 
+            print(">Cloud full")
             self.view.data.savex.pop()
             self.view.data.savey.pop()
             self.view.data.savez.pop()
+        else:
+            print(">Saved point to csv")
 
     def save_ref_plane(self):
         if(self.view.showp2plane):
@@ -1449,6 +1500,8 @@ class GUI():
                 self.view._enable_pan()
             case Keys.cloud:
                 self.save_cloud_point()
+            case Keys.freeze:
+                self.toggle_render()
             case _:
                 pass
     
@@ -1468,7 +1521,7 @@ class App():
 
         self.gui = gui
         self.view = view
-        self.arm = view.arm
+
 
 if __name__ == "__main__":
     # Here's the idea:
@@ -1476,8 +1529,18 @@ if __name__ == "__main__":
     # If nothing found, load an empty plot. The GUI owns the plot and can attach an arm to it once connected
 
     app = App()
-    app.gui.auto_scan()
-    app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
+
+    serial_poll_worker = Thread(target = app.view.serial_worker, args = (), daemon = True)
+    serial_poll_worker.start()
 
     app.view.data.testCSV()
+    app.gui.auto_scan()
+    app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
+    #app.gui.render()
+
     app.gui.root.mainloop()
+    serial_worker_in_queue.put(None)       # Just in case, shut down the threads
+    serial_poll_worker.join()
+
+  
+    

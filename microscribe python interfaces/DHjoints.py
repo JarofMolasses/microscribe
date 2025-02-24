@@ -1,4 +1,5 @@
 from matplotlib import cm
+import mpl_toolkits
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,8 +15,168 @@ import math
 linkcolor = 'slategrey'
 jointcolor = 'lightgrey'
 
-# this generates cylinder on two endpoints. 
-def draw_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None):
+
+def plot_cylinder_wire(ax=None, length=1.0, radius=1.0, thickness=0.0,
+                  A2B=None, start = np.array([0,0,0]), end = np.array([0,0,1]), x_s=1, wireframe=True, n_steps=100,
+                  alpha=1.0, color="k"):
+    """Plot cylinder.
+
+    A cylinder is the volume covered by a disk moving along a line segment.
+
+    Parameters
+    ----------
+    ax : Matplotlib 3d axis, optional (default: None)
+        If the axis is None, a new 3d axis will be created
+
+    length : float, optional (default: 1)
+        Length of the cylinder
+
+    radius : float, optional (default: 1)
+        Radius of the cylinder
+
+    thickness : float, optional (default: 0)
+        Thickness of a cylindrical shell. It will be subtracted from the
+        outer radius to obtain the inner radius. The difference must be
+        greater than 0.
+
+    A2B : array-like, shape (4, 4)
+        Center of the cylinder
+
+    ax_s : float, optional (default: 1)
+        Scaling of the new matplotlib 3d axis
+
+    wireframe : bool, optional (default: True)
+        Plot wireframe of cylinder and surface otherwise
+
+    n_steps : int, optional (default: 100)
+        Number of discrete steps plotted in each dimension
+
+    alpha : float, optional (default: 1)
+        Alpha value of the cylinder that will be plotted
+
+    color : str, optional (default: black)
+        Color in which the cylinder should be plotted
+
+    Returns
+    -------
+    ax : Matplotlib 3d axis
+        New or old axis
+
+    Raises
+    ------
+    ValueError
+        If thickness is <= 0
+    """
+    inner_radius = radius - thickness
+    if inner_radius <= 0.0:
+        raise ValueError("Thickness of cylindrical shell results in "
+                         "invalid inner radius: %g" % inner_radius)
+
+    if(A2B is not None):
+        axis_start = A2B.dot(np.array([0, 0, -0.5 * length, 1]))[:3]
+        axis_end = A2B.dot(np.array([0, 0, 0.5 * length, 1]))[:3]
+    else:
+        axis_start = start
+        axis_end = end
+
+    axis = axis_end - axis_start
+    length = norm(axis)
+    axis /= length
+
+    not_axis = np.array([1, 0, 0])
+    if np.allclose(axis, not_axis) or np.allclose(-axis, not_axis):
+        not_axis = np.array([0, 1, 0])
+
+    n1 = np.cross(axis, not_axis)
+    n1 /= norm(n1)
+    n2 = np.cross(axis, n1)
+
+    if wireframe:
+        t = np.linspace(0, length, n_steps)
+    else:
+        t = np.array([0, length])
+    theta = np.linspace(0, 2 * np.pi, n_steps)
+    t, theta = np.meshgrid(t, theta)
+
+    if thickness > 0.0:
+        X_outer, Y_outer, Z_outer = [
+            axis_start[i] + axis[i] * t
+            + radius * np.sin(theta) * n1[i]
+            + radius * np.cos(theta) * n2[i] for i in [0, 1, 2]]
+        X_inner, Y_inner, Z_inner = [
+            axis_end[i] - axis[i] * t
+            + inner_radius * np.sin(theta) * n1[i]
+            + inner_radius * np.cos(theta) * n2[i] for i in [0, 1, 2]]
+        X = np.hstack((X_outer, X_inner))
+        Y = np.hstack((Y_outer, Y_inner))
+        Z = np.hstack((Z_outer, Z_inner))
+    else:
+        X, Y, Z = [axis_start[i] + axis[i] * t
+                   + radius * np.sin(theta) * n1[i]
+                   + radius * np.cos(theta) * n2[i] for i in [0, 1, 2]]
+
+    # if wireframe:
+    #     return ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10, alpha=alpha,
+    #                       color=color)
+    # else:
+    #     return ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0)
+    return X,Y,Z
+
+
+# see: https://sabopy.com/py/matplotlib-3d-37/
+def calculate_stylus_const(height=15, radius=3, height_total = 134):
+    angle_res = 16
+    height_res = 10
+    theta = np.linspace(0, 2*np.pi, angle_res)
+    r = np.linspace(0, radius, height_res)
+    t,R =np.meshgrid(theta, r)
+    X = np.array(R*np.cos(t))
+    Y = np.array(R*np.sin(t))
+    Z = np.array(R*height/radius)
+
+    Xext = X[height_res-1, :]
+    Yext = Y[height_res-1, :]
+    Zext = np.ones(angle_res) * (height_total - height)
+
+    X = np.vstack([X,Xext])
+    Y = np.vstack([Y,Yext])
+    Z = np.vstack([Z,Zext])
+    return (X,Y,Z)
+
+def recover_stylus_surface(XYZ,extension=True):
+    angle_res = 16
+    height_res = 10
+    if(extension is True):
+        height_res = height_res + 1
+    X = np.empty((height_res,angle_res))
+    Y = np.empty((height_res,angle_res))
+    Z = np.empty((height_res,angle_res))
+    for i in range(height_res):
+        X[i,:] = XYZ[0,i*angle_res:i*angle_res+angle_res]
+        Y[i,:] = XYZ[1,i*angle_res:i*angle_res+angle_res]
+        Z[i,:] = XYZ[2,i*angle_res:i*angle_res+angle_res]
+    return (X,Y,Z)
+
+def gen_stylus(Xc,Yc,Zc,endpoint, R):
+    # get copy of cone points constants
+    X = Xc.copy()
+    Y = Yc.copy()
+    Z = Zc.copy()
+
+    x = endpoint[0]
+    y = endpoint[1]
+    z = endpoint[2]
+
+    # execute rotation 
+    XYZprime = np.stack( [X.ravel(), Y.ravel(), Z.ravel()] , axis = 0)
+    XYZprime = np.dot(R, XYZprime)
+
+    # plot surface
+    (Xp,Yp,Zp) = recover_stylus_surface(XYZprime)             # get surface-able vectors from a plain XYZ point cloud 
+    return Xp+x,Yp+y,Zp+z      
+
+# this generates cylinder on two endpoints or at origin with a height.
+def gen_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None, radius_steps = 10, length_steps = 2):
     if(p0_ is None ):
         p0_ = np.array([0, 0, 0]) #point at one end
     p0 = p0_
@@ -47,8 +208,8 @@ def draw_cylinder_on_axis(radius = 20, height=10, p0_ = None, p1_ = None):
     n2 = np.cross(v, n1)
 
     #surface ranges over t from 0 to length of axis and 0 to 2*pi
-    t = np.linspace(0, mag, 2)
-    theta = np.linspace(0, 2 * np.pi, 10)
+    t = np.linspace(0, mag, length_steps)
+    theta = np.linspace(0, 2 * np.pi, radius_steps)
     rsample = np.linspace(0, R, 2)
 
     #use meshgrid to make 2d arrays
@@ -160,45 +321,78 @@ def rotation_matrix(direction, angle, point=None):
         M[:3, 3] = point - np.dot(R, point)
     return R
 
+
 class LinkRender:
-    def __init__(self, links = [], ax=None):
+    def __init__(self, links = [], ax=None, fig=None):
+        self.fig = fig
         self.ax = ax
         self.links = links
         self.plots_per_link = 8          # default number of plotting objects per link. 3 for the frame, 1 for the joint axis, 1 for the link 
         self.link_plots = [self.plots_per_link*[None] for i in range(len(self.links))]  
+        self.stylus_plot = None
         # print("Initialized plotting objects: ")
         # print(self.link_plots)
+
+        self.coneX, self.coneY, self.coneZ = calculate_stylus_const()
+
+        for i in range(len(self.links)):
+            self.link_plots[i][5] = ax.plot([],[],[],color = 'red')[0]
+            self.link_plots[i][6] = ax.plot([],[],[],color = 'green')[0]
+            self.link_plots[i][7] = ax.plot([],[],[],color = 'blue')[0]
         pass
 
+    # don't run this if you have your axes predefined in another application.
     def init_render(self):
         ax = self.ax
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
 
-    # def clear_links(self):
-    #     for i in range(len(self.links)):
-    #             self.undraw_link(i)
+    def clear_links(self):
+        for i in range(len(self.links)):
+                self.undraw_link(i)
 
-    # def undraw_link(self, index):                       # It works, but not certain about the memory freeing
-    #     # print("Clearing link %d" % index)
-    #     for i in range(len(self.link_plots[index])):
-    #         try:
-    #             # print("Plot object:")
-    #             # print(self.link_plots[index][i])
-    #             self.link_plots[index][i].pop(0).remove()
-    #         except:
-    #             try:
-    #                 self.link_plots[index][i].remove()
-    #             except:
-    #                 pass
+    def undraw_link(self, link_index):                       # It works, but not certain about the memory freeing
+        # print("Clearing link %d" % index)
+        for i in range(len(self.link_plots[link_index])):
+            plot_object = self.link_plots[link_index][i]
 
-    # def redraw_links(self):
-    #     self.clear_links()
-    #     self.draw_links()
+            # print("Deleting link %i index %i" % (link_index, i))
+            # print(plot_object)
+            if(plot_object is not None):
+                # Try to delete surface
+                if(type(plot_object) is mpl_toolkits.mplot3d.art3d.Poly3DCollection or type(plot_object) is mpl_toolkits.mplot3d.art3d.Line3DCollection):
+                    try:
+                        plot_object.remove()          # this works for 3D Surface (poly3Dcollection)
+                        # print("Success")
+                    except Exception as e:
+                        print("Couldn't remove 3D collection")
+                        print (repr(e))
+                        pass
+                
+                else:
+                    # Try to delete line (unnecessary if using set_3d to update)
+                    try: 
+                        plot_line_object = plot_object[0]
+                        if(type(plot_line_object) is mpl_toolkits.mplot3d.art3d.Line3D):
+                            try: 
+                                # print("Plot object:")
+                                # print(self.link_plots[index][i])
+                                plot_line_object.remove()       # this works for 3D plots (3D Lines)
+                                # print("Success")
+                                continue
+                            except Exception as e:
+                                print(repr(e))
+                                print("Couldn't remove line3D")
+                                pass
+                    except:
+                        pass
 
-    def draw_base_plane(self):
-        ax = self.ax
+    def redraw_links(self):
+        self.clear_links()
+        self.draw_links()
+
+    def gen_base_plane(self):
         xmin = -60
         xmax = 60
         ymin = -40
@@ -208,32 +402,41 @@ class LinkRender:
         Y = np.array([ymin, ymax, ymin, ymax])
         Z = -(A*X + B*Y - D)/C
         return X,Y,Z
+    
+    def draw_stylus(self):
+    # If it's the last link, draw special end effector graphics
+        ax = self.ax
+        link = self.links[-1]
+        R = link.uvw
+        endpoint = link.endpoint
+        X,Y,Z = gen_stylus(self.coneX, self.coneY, self.coneZ, endpoint = endpoint, R=R)
+        self.stylus_plot = ax.plot_surface(X,Y,Z, color=linkcolor, alpha = 0.8)
 
     def draw_links(self):
         ax = self.ax
-        linkcolor = 'slategrey'
-        jointcolor = 'lightgrey'
+        #self.link_plots = [self.plots_per_link*[None] for i in range(len(self.links))]  
+        self.link_plots = [[] for i in range(8)]
+
         for i in range(len(self.links)):
             link = self.links[i]
-            #link.draw_uvw(self.ax)
-            u = np.vstack([link.endpoint, 30*link.uvw[:,0] + link.endpoint])
-            v = np.vstack([link.endpoint, 30*link.uvw[:,1] + link.endpoint])
-            w = np.vstack([link.endpoint, 30*link.uvw[:,2] + link.endpoint])
-
-            self.link_plots[i] = []         # Forced to do this until I can manage the garbage collection on the plot objects properly
 
             if(link.draw_link == True):
                 # print("Drawing link %d" % i)
                 if(link.child is not None):
                     link_p0 = link.endpoint
                     link_p1 = link.child.endpoint
+
                     # X = [link_p0[0], link_p1[0]]
                     # Y = [link_p0[1], link_p1[1]]
                     # Z = [link_p0[2], link_p1[2]]
                     # self.link_plots[i].append(ax.plot(X,Y,Z, color = 'red', alpha = 0.3))
 
-                    X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = draw_cylinder_on_axis(p0_ = link_p0, p1_=link_p1, radius = 5)
-                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15))
+                    #X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = link_p0, p1_=link_p1, radius = 5, radius_steps=8, length_steps = 4)
+                    # self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15))
+
+                    X,Y,Z = plot_cylinder_wire(ax=ax, radius = 5, start = link_p0, end = link_p1, color = linkcolor, n_steps = 50, alpha = 0.15)
+                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10, alpha=0.3,color= linkcolor))
+
                     # self.link_plots[i][0] = ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15)
 
             if(link.draw_joint == True):
@@ -241,24 +444,34 @@ class LinkRender:
                 if(link.index != 0):                                    # Don't show a joint on the first frame, it's fixed.
                     joint_p0 = link.endpoint + 25*link.uvw[:,2]         # joint cylinder along z axis
                     joint_p1 = link.endpoint - 25*link.uvw[:,2]         
-                        
-                    X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = draw_cylinder_on_axis(p0_ = joint_p0, p1_=joint_p1, radius = 15)
-                    self.link_plots[i].append(ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6))
-                    self.link_plots[i].append(ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6))
-                    self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6))
+
+                    A2B = link.refframe
+
+                    #X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = joint_p0, p1_=joint_p1, radius = 15, radius_steps = 8, length_steps = 4)
+                    # self.link_plots[i].append(ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6))
+                    # self.link_plots[i].append(ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6))
+                    #self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6))
+
+                    X,Y,Z = plot_cylinder_wire(ax=ax, length = 50, radius = 15, A2B = A2B, color = jointcolor, n_steps = 50, alpha = 0.3)
+                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10, alpha=0.3,color= jointcolor))     # wireframe version. Faster?
 
                     # self.link_plots[i][1] = ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6)
                     # self.link_plots[i][2] = ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6)
                     # self.link_plots[i][3] = ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6)
            
                 else:
-                    X,Y,Z = self.draw_base_plane()
+                    X,Y,Z = self.gen_base_plane()
                     self.link_plots[i].append(ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0))
 
-                    # self.link_plots[i][4] = ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0)
+                    #self.link_plots[i][4] = ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0)
+                    pass
             
             if(link.draw_frame == True):
                 # print("Drawing frame %d" % (i))
+                u = np.vstack([link.endpoint, 60*link.uvw[:,0] + link.endpoint])
+                v = np.vstack([link.endpoint, 60*link.uvw[:,1] + link.endpoint])
+                w = np.vstack([link.endpoint, 60*link.uvw[:,2] + link.endpoint])
+
                 self.link_plots[i].append(ax.plot(u[:,0], u[:,1], u[:,2],color = 'red'))
                 self.link_plots[i].append(ax.plot(v[:,0], v[:,1], v[:,2],color = 'green'))
                 self.link_plots[i].append(ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue'))
@@ -266,6 +479,13 @@ class LinkRender:
                 # self.link_plots[i][5] = (ax.plot(u[:,0], u[:,1], u[:,2],color = 'red'))
                 # self.link_plots[i][6] = (ax.plot(v[:,0], v[:,1], v[:,2],color = 'green'))
                 # self.link_plots[i][7] = (ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue'))
+
+                # lineu = self.link_plots[i][5]
+                # linev = self.link_plots[i][6]
+                # linew = self.link_plots[i][7]
+                # lineu.set_data_3d(u[:,0], u[:,1], u[:,2])
+                # linev.set_data_3d(v[:,0], v[:,1], v[:,2])
+                # linew.set_data_3d(w[:,0], w[:,1], w[:,2])
 
             self.ax.set_aspect('equal')
 
@@ -388,21 +608,15 @@ class Link:
         self.angle = angle
         self.calc_T_mod()
 
-    # def draw_uvw(self, ax, base=False):
-    #     u = np.vstack([self.endpoint, 10*self.uvw[:,0] + self.endpoint])
-    #     v = np.vstack([self.endpoint, 10*self.uvw[:,1] + self.endpoint])
-    #     w = np.vstack([self.endpoint, 10*self.uvw[:,2] + self.endpoint])
-    #     ax.plot(u[:,0], u[:,1], u[:,2],color = 'red')
-    #     ax.plot(v[:,0], v[:,1], v[:,2],color = 'green')
-    #     ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue')
-    #     ax.set_aspect('equal')
-
 if __name__ == "__main__":
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(6,6),facecolor = 'black')
     ax = fig.add_subplot(111, projection='3d')
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
 
-    link0 = Link(fixed = True, draw_joint = False)                                # origin frame
+    link0 = Link(fixed = True)                                # origin frame
     link1 = Link(parent = link0, D = 210.82)
     link2 = Link(parent = link1, D=-22.25, A =24.31, alpha = np.pi/2)
     link3 = Link(parent = link2, D=-0.03, A = 260.40)
@@ -411,11 +625,20 @@ if __name__ == "__main__":
     link6 = Link(parent = link5, D=-134.01,A = 10.16, alpha = -np.pi/2, draw_joint = False)
     links = [link0,link1,link2,link3,link4,link5,link6]
     robot = Robot(links)
-    renderer = LinkRender(links, ax = ax)
+    renderer = LinkRender(links, ax = ax, fig = fig)
 
     renderer.init_render()
+    renderer.draw_links()
+    renderer.draw_stylus()
     robot.set_angles([0.00000,2.39033,5.26539,0.00000,4.89800], base_offset = True)
-    renderer.draw_links() 
+    renderer.redraw_links() 
+    renderer.draw_stylus()
+
+    # robot.set_angles([0.00000,0,0,0,0], base_offset = True)
+    # renderer.redraw_links() 
+    
+
+    
     
     plt.show()
     pass
