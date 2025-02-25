@@ -129,7 +129,6 @@ class PointMeasure():
         self.deltay = 0
         self.deltaz = 0
         self.d_point_point = 0
-        pass
 
     def save_point(self, XYZ):
         if(self._point_input_index == 0):
@@ -208,7 +207,6 @@ class PointMeasure():
                 self.plane_ready = False
 
             self._plane_input_index = (self._plane_input_index + 1) % 3
-            return
         else:
             pass
         
@@ -220,7 +218,6 @@ class PointMeasure():
         if(self.plane_ready):
             self.intersect = self.P_plane - self.d*self.ref_n
             self.line_plane = np.vstack([self.P_plane, self.intersect]).T
-        pass
 
     def clear_point_to_plane(self):
         self.P_plane_loaded = False
@@ -470,7 +467,7 @@ class View():
         link3 = Link(parent = link2, D=-0.025400, A = 260.400787, alpha = 0.002684, beta = -0.002780)
         link4 = Link(parent = link3, D=234.848403, A=13.893800, alpha = 1.567920)
         link5 = Link(parent = link4, D=8.128000, A = -10.160000, alpha = -1.572618, draw_link = False)
-        link6 = Link(parent = link5, D=-134.010391,A = 10.160000, alpha = -1.569550, draw_joint = False, draw_link = False, draw_frame = True)
+        link6 = Link(parent = link5, D=-134.010391,A = 10.160000, alpha = -1.569550, draw_joint = False, draw_link = False, draw_frame = False)
         links = [link0,link1,link2,link3,link4,link5,link6]
         self.robot = Robot(links)
         self.robot_render = LinkRender(links, ax = self.ax)
@@ -559,7 +556,6 @@ class View():
                     self.detach_arm()
                     print(repr(e))
                     print(">Write failed. Restart program or scan again")
-                    pass
                 pass
             else:
                 pass
@@ -868,7 +864,7 @@ class View():
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
         self.ax.cla()
-        self.ax.set_axis_off()              # Huge savings from this.
+        self.ax.set_axis_off()              # Huge CPU usage savings from disabling axes.
         self.ax.set_xlim3d(curxlim3d)
         self.ax.set_ylim3d(curylim3d)
         self.ax.set_zlim3d(curzlim3d)
@@ -914,7 +910,7 @@ class View():
         self.ax.set_ylim3d(-500,500)
         self.ax.set_zlim3d(-100, 500)
         #set_axes_equal(self.ax)
-
+ 
         curxlim3d = self.ax.get_xlim()
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
@@ -997,10 +993,11 @@ class View():
                     self.robot_render.draw_links()
                     # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
                 if(self.showstylus is True):
-                    #self.stylus = self.draw_cone_euler(self.ax, self.data.tipx[0],self.data.tipy[0],self.data.tipz[0], self.data.dirx[0],self.data.diry[0],self.data.dirz[0], conecolor = styluscolor)
+                    #self.draw_cone_euler(self.ax, self.data.tipx[0],self.data.tipy[0],self.data.tipz[0], self.data.dirx[0],self.data.diry[0],self.data.dirz[0], conecolor = styluscolor)
                     self.robot_render.draw_stylus()
 
-                # #self.tip = self.ax.plot(self.data.x[-1],self.data.y[-1],self.data.z[-1],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
+                self.robot_render.draw_base_frame()         # always draw base frame.
+                #self.ax.plot(self.data.x[-1],self.data.y[-1],self.data.z[-1],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
                 self.ax.plot(self.robot.get_end_effector_endpoint()[0],self.robot.get_end_effector_endpoint()[1],self.robot.get_end_effector_endpoint()[2],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
                 
                 if(self.showPath is True):
@@ -1085,7 +1082,7 @@ class GUI():
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
         viewmenu.add_checkbutton(label = 'Redirect console', command = self.toggle_console)    
-        viewmenu.add_checkbutton(label = 'Hide joints', command = self.toggle_robot)
+        viewmenu.add_checkbutton(label = 'Hide joints (significant performance gain)', command = self.toggle_robot)
         measModes = Menu(viewmenu, tearoff = 0)
         viewmenu.add_cascade(label = 'Show/hide measurement', menu = measModes)
         mode1 = tk.IntVar()            # this is supposed to hide measurements by default
@@ -1177,7 +1174,6 @@ class GUI():
         self.root.protocol("WM_DELETE_WINDOW", close_window)
 
         self.root.config(menu = menubar)
-        #root.bind("<space>", self.save_cloud_point)
         root.bind("<Key>", self.key_handler)
         root.bind("<KeyRelease>", self.key_release_handler)
 
@@ -1186,8 +1182,8 @@ class GUI():
 
     def update_main_canvas(self, i = 1):
         self.view.update_main_canvas()
-        self.canvas.draw()             # forcing this to draw makes it slower but the window more responsive orz
-        self.canvas.flush_events()
+        # self.canvas.draw()             
+        # self.canvas.flush_events()
 
     # see : https://stackoverflow.com/a/14224477
     def serial_ports(self):
@@ -1321,15 +1317,15 @@ class GUI():
             print("No file chosen. Returning")
             pass
 
-    # Start custom render with threading
-    def render_thread(self):
-        # plot_worker_in_queue.put(START_WORKER)
-        pass
+    # # Start custom render with threading
+    # def render_thread(self):
+    #     # plot_worker_in_queue.put(START_WORKER)
+    #     pass
 
     # Start built-in animation. don't use at the same time as the custom render loop
     def render_ani(self):
         try:
-            self.ani = animation.FuncAnimation(self.view.fig, self.update_main_canvas, interval=60, frames=100, blit=False) 
+            self.ani = animation.FuncAnimation(self.view.fig, self.update_main_canvas, interval=60, frames=1, blit=False)           # frames = 1 performs... Extremely better. 
             self.canvas.draw_idle()   
             #self.ani.resume()
         except:
@@ -1340,7 +1336,7 @@ class GUI():
         if(self.update):
             self.view.update_main_canvas()                              # update fig,ax
             self.canvas.draw_idle()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
-                                                                  # draw() and draw() are options. draw() is faster but draw() seems to behave more nicely with the window
+                                                                  # draw_idle() and draw() are options. draw_idle() is faster but draw() seems to behave more nicely with the window
 
         self._renderjob = self.root.after(50, self.render)        # schedule updates with .after
 

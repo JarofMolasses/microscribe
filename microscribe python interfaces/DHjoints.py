@@ -123,16 +123,18 @@ def plot_cylinder_wire(ax=None, length=1.0, radius=1.0, thickness=0.0,
     return X,Y,Z
 
 
-# see: https://sabopy.com/py/matplotlib-3d-37/
-def calculate_stylus_const(height=15, radius=3, height_total = 134):
-    angle_res = 16
-    height_res = 10
+def calculate_cone_const(height = 15, radius = 3,angle_res = 16,height_res = 10):
     theta = np.linspace(0, 2*np.pi, angle_res)
     r = np.linspace(0, radius, height_res)
     t,R =np.meshgrid(theta, r)
     X = np.array(R*np.cos(t))
     Y = np.array(R*np.sin(t))
     Z = np.array(R*height/radius)
+    return X,Y,Z
+
+# see: https://sabopy.com/py/matplotlib-3d-37/
+def calculate_stylus_const(height=15, radius=3, height_total = 134,angle_res = 16,height_res = 10):
+    X,Y,Z = calculate_cone_const(height, radius, angle_res, height_res)
 
     Xext = X[height_res-1, :]
     Yext = Y[height_res-1, :]
@@ -143,9 +145,7 @@ def calculate_stylus_const(height=15, radius=3, height_total = 134):
     Z = np.vstack([Z,Zext])
     return (X,Y,Z)
 
-def recover_stylus_surface(XYZ,extension=True):
-    angle_res = 16
-    height_res = 10
+def recover_stylus_surface(XYZ,extension=True,angle_res = 16,height_res = 10):
     if(extension is True):
         height_res = height_res + 1
     X = np.empty((height_res,angle_res))
@@ -155,7 +155,27 @@ def recover_stylus_surface(XYZ,extension=True):
         X[i,:] = XYZ[0,i*angle_res:i*angle_res+angle_res]
         Y[i,:] = XYZ[1,i*angle_res:i*angle_res+angle_res]
         Z[i,:] = XYZ[2,i*angle_res:i*angle_res+angle_res]
-    return (X,Y,Z)
+    return (X,Y,Z) 
+
+def gen_cone(Xc,Yc,Zc,endpoint, R=None):
+    # get copy of cone points constants
+    X = Xc.copy()
+    Y = Yc.copy()
+    Z = Zc.copy()
+
+    x = endpoint[0]
+    y = endpoint[1]
+    z = endpoint[2]
+
+    # execute rotation 
+    XYZprime = np.stack( [X.ravel(), Y.ravel(), Z.ravel()] , axis = 0)
+    if(R is None):
+        R = np.eye(3,3)
+    XYZprime = np.dot(R, XYZprime)
+
+    # plot surface
+    (Xp,Yp,Zp) = recover_stylus_surface(XYZprime,extension = False)             # get surface-able vectors from a plain XYZ point cloud 
+    return Xp+x,Yp+y,Zp+z      
 
 def gen_stylus(Xc,Yc,Zc,endpoint, R):
     # get copy of cone points constants
@@ -333,7 +353,16 @@ class LinkRender:
         # print("Initialized plotting objects: ")
         # print(self.link_plots)
 
+        self.vector_display_length = 60
         self.coneX, self.coneY, self.coneZ = calculate_stylus_const()
+        self.arrowX, self.arrowY, self.arrowZ = calculate_cone_const(height = 30, radius = 10)
+
+        # reference frame basis vector display
+        Z2Y = rotation_matrix(np.array([1,0,0]), -np.pi/2)
+        Z2X = rotation_matrix(np.array([0,1,0]), np.pi/2)
+        self.Xi,self.Yi,self.Zi = gen_cone(self.arrowX,self.arrowY,self.arrowZ,self.vector_display_length*np.array([1,0,0]), -Z2X)
+        self.Xj,self.Yj,self.Zj = gen_cone(self.arrowX,self.arrowY,self.arrowZ,self.vector_display_length*np.array([0,1,0]), -Z2Y)
+        self.Xk,self.Yk,self.Zk = gen_cone(self.arrowX,self.arrowY,self.arrowZ,self.vector_display_length*np.array([0,0,1]), R=-np.eye(3,3))
 
         for i in range(len(self.links)):
             self.link_plots[i][5] = ax.plot([],[],[],color = 'red')[0]
@@ -393,18 +422,18 @@ class LinkRender:
         self.draw_links()
 
     def gen_base_plane(self):
-        xmin = -60
-        xmax = 60
-        ymin = -40
-        ymax = 40
+        xmin = -100
+        xmax = 100
+        ymin = -100
+        ymax = 100
         [A,B,C,D] = [0,0,1,0]
         X = np.array([xmin, xmin, xmax, xmax])
         Y = np.array([ymin, ymax, ymin, ymax])
         Z = -(A*X + B*Y - D)/C
         return X,Y,Z
     
+    # Draw specific "hors de robot" elements e.g. base coordinate frame, stylus
     def draw_stylus(self):
-    # If it's the last link, draw special end effector graphics
         ax = self.ax
         link = self.links[-1]
         R = link.uvw
@@ -412,13 +441,29 @@ class LinkRender:
         X,Y,Z = gen_stylus(self.coneX, self.coneY, self.coneZ, endpoint = endpoint, R=R)
         self.stylus_plot = ax.plot_surface(X,Y,Z, color=linkcolor, alpha = 0.8)
 
+    def draw_base_frame(self):
+        ax = self.ax
+        link = self.links[0]
+        X,Y,Z = self.gen_base_plane()
+        self.link_plots[0] = []
+        self.link_plots[0].append(ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.2,edgecolor='none',linewidth=0))
+
+        u = np.vstack([link.endpoint, self.vector_display_length*link.uvw[:,0] + link.endpoint])
+        v = np.vstack([link.endpoint, self.vector_display_length*link.uvw[:,1] + link.endpoint])
+        w = np.vstack([link.endpoint, self.vector_display_length*link.uvw[:,2] + link.endpoint])
+
+        self.link_plots[0].append(ax.plot(u[:,0], u[:,1], u[:,2],color = 'red'))
+        self.link_plots[0].append(ax.plot(v[:,0], v[:,1], v[:,2],color = 'green'))
+        self.link_plots[0].append(ax.plot(w[:,0], w[:,1], w[:,2],color = 'blue'))
+
+
     def draw_links(self):
         ax = self.ax
-        #self.link_plots = [self.plots_per_link*[None] for i in range(len(self.links))]  
-        self.link_plots = [[] for i in range(8)]
+       # self.link_plots = [[] for i in range(8)]
 
         for i in range(len(self.links)):
             link = self.links[i]
+            self.link_plots[i] = []
 
             if(link.draw_link == True):
                 # print("Drawing link %d" % i)
@@ -431,37 +476,39 @@ class LinkRender:
                     # Z = [link_p0[2], link_p1[2]]
                     # self.link_plots[i].append(ax.plot(X,Y,Z, color = 'red', alpha = 0.3))
 
-                    #X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = link_p0, p1_=link_p1, radius = 5, radius_steps=8, length_steps = 4)
+                    X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = link_p0, p1_=link_p1, radius = 5, radius_steps=10, length_steps = 5)
                     # self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15))
 
-                    X,Y,Z = plot_cylinder_wire(ax=ax, radius = 5, start = link_p0, end = link_p1, color = linkcolor, n_steps = 50, alpha = 0.15)
-                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10, alpha=0.3,color= linkcolor))
+                    # X,Y,Z = plot_cylinder_wire(ax=ax, radius = 5, start = link_p0, end = link_p1, color = linkcolor, n_steps = 20, alpha = 0.15)
+                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=1, cstride=1, alpha=0.1,color= linkcolor))
 
                     # self.link_plots[i][0] = ax.plot_surface(X, Y, Z, color=linkcolor, alpha = 0.15)
 
             if(link.draw_joint == True):
                 # print("Drawing joint %d" % i)
                 if(link.index != 0):                                    # Don't show a joint on the first frame, it's fixed.
-                    joint_p0 = link.endpoint + 25*link.uvw[:,2]         # joint cylinder along z axis
-                    joint_p1 = link.endpoint - 25*link.uvw[:,2]         
+                    joint_p0 = link.endpoint + 15*link.uvw[:,2]         # joint cylinder along z axis
+                    joint_p1 = link.endpoint - 15*link.uvw[:,2]         
 
                     A2B = link.refframe
 
-                    #X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = joint_p0, p1_=joint_p1, radius = 15, radius_steps = 8, length_steps = 4)
+                    X,Y,Z,X2,Y2,Z2,X3,Y3,Z3 = gen_cylinder_on_axis(p0_ = joint_p0, p1_=joint_p1, radius = 12, radius_steps = 16, length_steps = 4)
                     # self.link_plots[i].append(ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6))
                     # self.link_plots[i].append(ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6))
-                    #self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6))
+                    # self.link_plots[i].append(ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6))
 
-                    X,Y,Z = plot_cylinder_wire(ax=ax, length = 50, radius = 15, A2B = A2B, color = jointcolor, n_steps = 50, alpha = 0.3)
-                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10, alpha=0.3,color= jointcolor))     # wireframe version. Faster?
+                    # X,Y,Z = plot_cylinder_wire(ax=ax, length = 40, radius = 12, A2B = A2B, color = jointcolor, n_steps = 20, alpha = 0.3)
+                    self.link_plots[i].append(ax.plot_wireframe(X, Y, Z, rstride=1, cstride=1, alpha=0.1,color= jointcolor))     # wireframe version. Faster?
+                    self.link_plots[i].append(ax.plot_wireframe(X2, Y2, Z2, rstride=1, cstride=1, alpha=0.1, color= jointcolor))     # wireframe version. Faster?
+                    self.link_plots[i].append(ax.plot_wireframe(X3, Y3, Z3, rstride=1, cstride=1, alpha=0.1, color= jointcolor))     # wireframe version. Faster?
 
                     # self.link_plots[i][1] = ax.plot_surface(X2, Y2, Z2, color=jointcolor, alpha = 0.6)
                     # self.link_plots[i][2] = ax.plot_surface(X3, Y3, Z3, color=jointcolor, alpha = 0.6)
                     # self.link_plots[i][3] = ax.plot_surface(X, Y, Z, color=jointcolor, alpha = 0.6)
            
                 else:
-                    X,Y,Z = self.gen_base_plane()
-                    self.link_plots[i].append(ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0))
+                    # X,Y,Z = self.gen_base_plane()
+                    # self.link_plots[i].append(ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.3,edgecolor='none',linewidth=0))
 
                     #self.link_plots[i][4] = ax.plot_trisurf(X,Y,Z,color = jointcolor, alpha = 0.5,edgecolor='none',linewidth=0)
                     pass
@@ -633,6 +680,7 @@ if __name__ == "__main__":
     robot.set_angles([0.00000,2.39033,5.26539,0.00000,4.89800], base_offset = True)
     renderer.redraw_links() 
     renderer.draw_stylus()
+    renderer.draw_base_frame()
 
     # robot.set_angles([0.00000,0,0,0,0], base_offset = True)
     # renderer.redraw_links() 
