@@ -1,13 +1,11 @@
 # TODO:
-# Consider vector graphics option for speed. 
 # We need to update just the artists and not the axes every time. cla() is SUPER SLOW
-# Uses way too much power. around 20W on a 12700k.
 # Extract machine parameters automatically during autoscan(). Currently hardcoded
 # Stop calculating matrices on Arduino and just report angles for numpy
 # Implement background computation in separate thread (e.g. Serial, matrix manipulation). DONE
 
 # TODO but next time.
-# Once we get the machine params and perform calculations in numpy, then we can replace the Arduino with a simple FT232 serial-USB
+# Once we get the machine params and perform calculations in numpy, then we can replace the Arduino with a simple FT232 serial-USB. Build a custom cable
 # We have pushed matplotlib's 3D capabilities pretty much as far as they'll go. We can move to something actually resembling a 3D engine (vispy, plotly, pyvista, MayaVi, pyQtgraph, three.js...)
 
 import numpy as np
@@ -25,7 +23,6 @@ mpl.use("Qt5Agg")                        # Qt5 FIXES THE .set() method on labels
 import mpl_toolkits.mplot3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.axes3d import _Quaternion
 
 import tkinter as tk
 from tkinter import Menu, Button, Frame
@@ -67,7 +64,6 @@ WORKER_STOPPED = 'stopped'
 HOME_ARM = 'home'
 serial_worker_in_queue = Queue()           # shared queue to issue commands to serial thread
 serial_worker_out_queue = Queue()             # shared queue to get data from serial thread 
-# plot_worker_in_queue = Queue()
 
 # Storing keybinds for easy remapping later
 class Keys:
@@ -401,7 +397,7 @@ class View():
         self.point2plane = point2plane
 
         plt.style.use('dark_background')
-
+        self.plt = plt
         self.fig = plt.figure(figsize = (10,10), facecolor = 'black')
 
         # Two ways to generate 3D Axes
@@ -415,7 +411,7 @@ class View():
         # ax3d = Axes3D(self.fig)
         # self.ax = self.fig.add_axes(ax3d)       
 
-        self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=[])                         # disable the drag zoom
+        self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=3)                         # disable the drag zoom
         #self.fig.canvas.callbacks._connect_picklable('scroll_event', self._on_scroll)      # alternate method for attaching event callbacks used inside mpl. 
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         # self.fig.canvas.mpl_connect('key_press_event', self._on_press)
@@ -449,13 +445,12 @@ class View():
         self.showstylus = True
         self.showp2plane = True
         self.showp2p = True
+        self._enable_drag = False
 
         self.cone_height_res = 10
         self.cone_angle_res = 16
         self.cone_extension_height = 100
         self.coneX, self.coneY, self.coneZ = self.calculate_cone_const()
-
-        self._enable_drag = False
         
         self.current_frame_time = timeit.default_timer()
         self.current_frame_avg_queue = [self.current_frame_time]
@@ -563,6 +558,9 @@ class View():
 
         print("Exiting serial worker thread")
 
+    def _on_close_fig(self, event):
+        self.detach_arm()
+
     def _disable_pan(self):
         if(self._enable_drag == True):       
             self._enable_drag = False
@@ -573,13 +571,6 @@ class View():
             self._enable_drag = True
             self.ax.mouse_init(rotate_btn = [], pan_btn = 2, zoom_btn=[])     # bind middle mouse to pan on press. Has a touch of extra lag due to key repeating constantly firing the event and interrupting the thread.
     
-    def _on_release(self, event): 
-        if(event.key == 'tab'):             
-            self._disable_pan()
-
-    def _on_press(self, event):
-        if(event.key == 'tab'):             # Absolutely baffling: binding this to tab works much better than control?
-            self._enable_pan()
 
     def _on_scroll(self, event):
         w = self.ax._pseudo_w
@@ -883,7 +874,8 @@ class View():
         #     self.ax.set_ylabel("Y (mm)", color = 'grey')
         # else:
         #     self.ax.set_yticks([])
-  
+    
+
     def init_plot(self):
         print(">Init plot")
         self.reset_axis_limits()
@@ -909,7 +901,6 @@ class View():
         self.ax.set_xlim3d(-500,500)
         self.ax.set_ylim3d(-500,500)
         self.ax.set_zlim3d(-100, 500)
-        #set_axes_equal(self.ax)
  
         curxlim3d = self.ax.get_xlim()
         curylim3d = self.ax.get_ylim()
@@ -1046,6 +1037,10 @@ class View():
 
         else:
             self.textdisconnected.set_visible(True)
+        
+        # if self.fig.canvas.figure.stale:
+        #     self.fig.canvas.draw()
+        # self.fig.canvas.flush_events()
 
 
 class GUI():
@@ -1110,9 +1105,9 @@ class GUI():
         self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
         canvas.get_tk_widget().configure(background = 'black', highlightcolor='lightgrey', highlightbackground='lightgrey')         # needed to remove unsightly border 
-        canvas.mpl_connect('button_press_event', self.view.ax._button_press)
-        canvas.mpl_connect('button_release_event', self.view.ax._button_release)
-        canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
+        # canvas.mpl_connect('button_press_event', self.view.ax._button_press)
+        # canvas.mpl_connect('button_release_event', self.view.ax._button_release)
+        # canvas.mpl_connect('motion_notify_event', self.view.ax._on_move)
 
         plt.rcParams["keymap.quit"] = []           # Tried to bind Q to save the Q reference point but it's already bound to "quit" the mpl figure. Stupid. Disconnect it here
         plt.rcParams["keymap.back"]=[]              # Actually, I hate all of these. Delete all of them
@@ -1157,11 +1152,17 @@ class GUI():
         self.console_visible = False
         self.connected = False
 
+        self.ani = None
+
         self.update_console()
                 
         def close_window():            
             if(self.ani is not None):
-                self.ani.pause()
+                try:
+                    self.ani.pause()
+                except Exception as e:
+                    print(repr(e))
+                    pass
             serial_worker_in_queue.put(None)
             if(self.view.arm is not None):
                 self.view.arm.send_command('x')
@@ -1182,8 +1183,6 @@ class GUI():
 
     def update_main_canvas(self, i = 1):
         self.view.update_main_canvas()
-        # self.canvas.draw()             
-        # self.canvas.flush_events()
 
     # see : https://stackoverflow.com/a/14224477
     def serial_ports(self):
@@ -1215,7 +1214,7 @@ class GUI():
         
         return result
     
-    # From a list of available COM ports, identifies the first Microscribe interface 
+    # From a list of available COM ports, identifies the first Microscribe Arduino interface. 
     # Assumes only one is connected.
     def find_microscribe(self,listports = ""):
         target = None
@@ -1248,7 +1247,8 @@ class GUI():
 
         return target
 
-    # Connects to available Microscribe interface automatically
+    # Connects to available Microscribe Arduino interface automatically
+    # We may eventually change to reading directly from the Microscribe. 
     # Assumes only one is connected. 
     # Returns false if unsuccessful. True if successful
     def auto_scan(self):
@@ -1285,6 +1285,9 @@ class GUI():
                     arm.send_query('q')
                     self.root.title(self.title + " ({})".format(portname))
                     serial_worker_in_queue.put(START_WORKER)
+                    
+                    # self.view.plt.get_current_fig_manager().set_window_title(self.title+ " ({})".format(portname))
+                    # self.view.plt.show()
                     
             except (IndexError, serial.SerialException):
                 print(">Auto-scan unsuccessful.")
@@ -1324,33 +1327,29 @@ class GUI():
 
     # Start built-in animation. don't use at the same time as the custom render loop
     def render_ani(self):
-        try:
-            self.ani = animation.FuncAnimation(self.view.fig, self.update_main_canvas, interval=60, frames=1, blit=False)           # frames = 1 performs... Extremely better. 
-            self.canvas.draw_idle()   
-            #self.ani.resume()
+        try: 
+            self.ani = animation.FuncAnimation(self.view.fig, self.update_main_canvas, interval=120, frames=1, blit=False)           # frames = 1 performs... Extremely better. 
+            self.view.fig.canvas.draw_idle()   
         except:
             pass
 
     # Start custom render loop with tkinter scheduler
     def render(self):
         if(self.update):
-            self.view.update_main_canvas()                              # update fig,ax
-            self.canvas.draw_idle()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
+            self.update_main_canvas()                              # update fig,ax
+            #self.canvas.draw_idle()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
                                                                   # draw_idle() and draw() are options. draw_idle() is faster but draw() seems to behave more nicely with the window
-
         self._renderjob = self.root.after(50, self.render)        # schedule updates with .after
 
     def toggle_render(self):
         if(self.update):
             try:
                 self.ani.pause()
-                # plot_worker_in_queue.put(STOP_WORKER)
             except:
                 pass
         else:
             try:
                 self.ani.resume()
-                # plot_worker_in_queue.put(START_WORKER)
             except:
                 pass
         self.update = not self.update
@@ -1478,7 +1477,6 @@ class GUI():
 
     # TODO: 
     # move the key handler into the view class, this is all canvas stuff anyways. 
-  
     def key_handler(self,e):           
         #print(e.keysym)
         match e.keysym:
@@ -1514,7 +1512,6 @@ class App():
             view = View()
         if gui is None:
             gui = GUI(view)
-
         self.gui = gui
         self.view = view
 
@@ -1523,7 +1520,6 @@ if __name__ == "__main__":
     # Here's the idea:
     # On startup, scan the ports. If you find a microscribe, connect it right away (send 'r')
     # If nothing found, load an empty plot. The GUI owns the plot and can attach an arm to it once connected
-
     app = App()
 
     serial_poll_worker = Thread(target = app.view.serial_worker, args = (), daemon = True)
@@ -1533,8 +1529,8 @@ if __name__ == "__main__":
     app.gui.auto_scan()
     app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
     #app.gui.render()
-
     app.gui.root.mainloop()
+
     serial_worker_in_queue.put(None)       # Just in case, shut down the threads
     serial_poll_worker.join()
 
