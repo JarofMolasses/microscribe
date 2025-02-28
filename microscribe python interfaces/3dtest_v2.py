@@ -8,6 +8,9 @@
 # Once we get the machine params and perform calculations in numpy, then we can replace the Arduino with a simple FT232 serial-USB. Build a custom cable
 # We have pushed matplotlib's 3D capabilities pretty much as far as they'll go. We can move to something actually resembling a 3D engine (vispy, plotly, pyvista, MayaVi, pyQtgraph, three.js...)
 
+# MATPLOTLIB 3.10.0
+# Python 3.11
+
 import numpy as np
 # from scipy.spatial.transform import Rotation as R
 # from scipy.interpolate import griddata
@@ -39,24 +42,62 @@ import serial
 import sys
 import glob
 
+import DHjoints
 from DHjoints import Robot,Link,LinkRender
 
 from threading import Thread
 from queue import Queue
 
-
 planecolor = 'plum'
-P2Pcolor = 'slategrey'
-P2Plcolor = 'orange'
-readoutcolor = 'whitesmoke'
-indicatorcolor = 'whitesmoke'
+P2Pcolor = 'skyblue'
+P2Plcolor = 'palegreen'
+readoutcolor = 'gainsboro'
+indicatorcolor = 'gainsboro'
 consolecolor = 'slategrey'
-styluscolor = 'aquamarine'
+styluscolor = 'slategrey'
 tipcolor = 'aquamarine'
 cloudcolor = 'red'
+axiscolor = 'grey'
+linkcolor = 'slategrey'
+jointcolor = 'lightgrey'
 
-NUM_ENCODERS = 5
+STYLE_CRT_GREEN = 'CRT_GREEN'
+STYLE_CRT_AMBER = 'CRT_AMBER'
+style = STYLE_CRT_GREEN
+if(style == STYLE_CRT_GREEN):
+    planecolor = 'mediumaquamarine'
+    P2Pcolor = 'skyblue'
+    P2Plcolor = 'orangered'
+    readoutcolor = 'palegreen'
+    indicatorcolor = 'palegreen'
+    consolecolor = 'palegreen'
+    styluscolor = 'aquamarine'
+    tipcolor = 'aquamarine'
+    cloudcolor = 'red'
+    axiscolor = 'palegreen'
+    linkcolor = 'aquamarine'
+    jointcolor = 'palegreen'
 
+elif(style == STYLE_CRT_AMBER):
+    planecolor = 'bisque'
+    P2Pcolor = 'skyblue'
+    P2Plcolor = 'palegreen'
+    readoutcolor = 'darkorange'
+    indicatorcolor = 'darkorange'
+    consolecolor = 'darkorange'
+    styluscolor = 'darkorange'
+    tipcolor = 'orangered'
+    cloudcolor = 'red'
+    axiscolor = 'darkorange'
+    linkcolor = 'darkorange'
+    jointcolor = 'darkorange'
+
+
+
+
+NUM_ENCODERS = 5        # Number of encoders to read. Do we really need this here
+
+# Shared queue commands
 START_WORKER = 'start'
 WORKER_RUNNING = 'started'
 STOP_WORKER = 'stop'
@@ -121,10 +162,42 @@ class PointMeasure():
         self.P_ref_loaded = False
         self.line_point = []
         self._point_input_index = 0     
-        self.deltax = 0
-        self.deltay = 0
-        self.deltaz = 0
         self.d_point_point = 0
+
+        self.averaging_window = 24
+        self.x = []
+        self.y = []
+        self.z = []
+
+    def buffer_full(self):
+        if(len(self.x) < self.averaging_window):
+            return False
+        else:
+            return True
+        
+    def clear_point_average(self):
+        self.x = []
+        self.y = []
+        self.z = []
+    
+    def save_point_average(self, XYZ):
+        if(len(self.x) < self.averaging_window):
+            self.x.append(XYZ[0])
+            self.y.append(XYZ[1])
+            self.z.append(XYZ[2])
+
+        if(len(self.x) >= self.averaging_window):
+            meanx = np.mean(self.x)
+            meany = np.mean(self.y)
+            meanz = np.mean(self.z)
+            sx = np.std(self.x)
+            sy = np.std(self.y)
+            sz = np.std(self.z)
+            print(">MEAN XYZ: %.4f %.4f %.4f" % (meanx, meany, meanz))
+            print(">SDEV XYZ: %.4f %.4f %.4f" % (sx, sy, sz))
+            self.save_point([meanx, meany, meanz])
+            self.save_point_to_plane([meanx, meany, meanz])
+            
 
     def save_point(self, XYZ):
         if(self._point_input_index == 0):
@@ -245,6 +318,8 @@ class PlotData():
         self.tip_points = 1                           # max number of points to show only the tip location 
         self.csv_points = 2000                        # max number of points in csv point cloud. This is pretty much as high as we can go until I optimize things 
                                                       # It may require PyQT to push this significantly higher.
+        self.avg_points = 16                          # We can try to mitigate "noise" from the error propagation and encoder resolution limit by average the last N points 
+
         self.x = []
         self.y = []
         self.z = []
@@ -261,6 +336,7 @@ class PlotData():
         self.joints = [None]*(NUM_ENCODERS)
 
     def update_joints(self,joints):
+        assert len(joints) == NUM_ENCODERS
         if(len(joints) == NUM_ENCODERS):
             self.joints = joints
     
@@ -382,7 +458,7 @@ class Arm():
         print(">Timed out waiting for response")
 
 
-class View():
+class  View():
     def __init__(self, arm = None, plotdata = None, point2plane = None):
         # if arm is None:
         #     arm = Arm()
@@ -396,7 +472,7 @@ class View():
             point2plane = PointMeasure()
         self.point2plane = point2plane
 
-        plt.style.use('dark_background')
+        # plt.style.use('dark_background')
         self.plt = plt
         self.fig = plt.figure(figsize = (10,10), facecolor = 'black')
 
@@ -404,8 +480,7 @@ class View():
         # add_subplot is the proper way to do this. https://github.com/matplotlib/matplotlib/issues/24639
         # 1. add_subplot() or add_axes()
         #self.ax = self.fig.add_subplot(111, projection = "3d")
-        self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d')
-        self.ax.set_axis_off()
+        self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d', facecolor = 'black')
 
         # 2. add_axes(Axes3D)
         # ax3d = Axes3D(self.fig)
@@ -425,15 +500,15 @@ class View():
 
         font = 'monospace'
         #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color=indicatorcolor,fontsize=7, name = font)  
-        self.textreadout = self.fig.text(0.5,0.96, "XYZ DATA", va='top', ha='center',color=readoutcolor,fontsize=18, name = font)
-        self.textreadout.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
+        self.textreadout = self.fig.text(0.5,0.96, "XYZ DATA", va='center', ha='center',color=readoutcolor,fontsize=18, name = font)
+        self.textreadout.set_bbox(dict(facecolor='black', alpha=1, edgecolor=readoutcolor))
         self.textcloudpoints = self.fig.text(0, 0.015, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
         self.textfps = self.fig.text(0, 0.03, "FRAME TIME", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
         self.textpointplane = self.fig.text(0.5, 0.1, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = P2Plcolor, fontsize = 18, name = font)
-        self.textpointplane.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
+        self.textpointplane.set_bbox(dict(facecolor='black', alpha=1, edgecolor=P2Plcolor))
         self.textplanerefpoints = self.fig.text(1, 0, "NUMBER OF PLANE REFERENCE POINTS", va='bottom', ha='right', color = indicatorcolor, name = font, fontsize = 7)
         self.textpointpoint = self.fig.text(0.5, 0.06, "POINT TO POINT", va = 'bottom', ha = 'center', color = P2Pcolor, fontsize = 18, name = font)
-        self.textpointpoint.set_bbox(dict(facecolor='black', alpha=1, edgecolor='black'))
+        self.textpointpoint.set_bbox(dict(facecolor='black', alpha=1, edgecolor=P2Pcolor))
         self.textpoint2 = self.fig.text(1, 0.015, "POINT 2", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
         self.textpoint1 = self.fig.text(1, 0.03, "POINT 1", va = 'bottom', ha = 'right', color = indicatorcolor, fontsize = 7, name = font)
         self.textdisconnected = self.fig.text(0.5,0.5, "DISCONNECTED", va = 'bottom', ha = 'center', color = 'red', fontsize = 32, name = font)
@@ -450,7 +525,6 @@ class View():
         self.cone_height_res = 10
         self.cone_angle_res = 16
         self.cone_extension_height = 100
-        self.coneX, self.coneY, self.coneZ = self.calculate_cone_const()
         
         self.current_frame_time = timeit.default_timer()
         self.current_frame_avg_queue = [self.current_frame_time]
@@ -535,8 +609,7 @@ class View():
                                 
                             elif(indata.startswith("THETA")):
                                 enc = indata.split(",")       # Data format: encoder 1,2,3,4,5
-                                for i in range(NUM_ENCODERS):
-                                    self.data.joints[i] = float(enc[i+1])
+                                self.data.update_joints(np.array(enc[1:], dtype=float))
                                 # print("joints: " + str(self.data.joints))
                                 self.robot.set_angles(self.data.joints, base_offset = True)         
 
@@ -554,7 +627,7 @@ class View():
                 pass
             else:
                 pass
-            time.sleep(0.025) # we've got to let other guys access the data
+            time.sleep(0.0125) # we've got to let other guys access the data
 
         print("Exiting serial worker thread")
 
@@ -604,57 +677,57 @@ class View():
         self.ax.view_init(elev=0, azim=90)
         self.update_main_canvas()
     
-    # see: https://sabopy.com/py/matplotlib-3d-37/
-    def calculate_cone_const(self, height=15, radius=3, height_ext = 100):
-        angle_res = self.cone_angle_res
-        height_res = self.cone_height_res
-        theta = np.linspace(0, 2*np.pi, angle_res)
-        r = np.linspace(0, radius, height_res)
-        t,R =np.meshgrid(theta, r)
-        X = np.array(R*np.cos(t))
-        Y = np.array(R*np.sin(t))
-        Z = np.array(R*height/radius)
+    # # see: https://sabopy.com/py/matplotlib-3d-37/
+    # def calculate_cone_const(self, height=15, radius=3, height_ext = 100):
+    #     angle_res = self.cone_angle_res
+    #     height_res = self.cone_height_res
+    #     theta = np.linspace(0, 2*np.pi, angle_res)
+    #     r = np.linspace(0, radius, height_res)
+    #     t,R =np.meshgrid(theta, r)
+    #     X = np.array(R*np.cos(t))
+    #     Y = np.array(R*np.sin(t))
+    #     Z = np.array(R*height/radius)
 
-        Xext = X[height_res-1, :]
-        Yext = Y[height_res-1, :]
-        Zext = np.ones(angle_res) * (height+height_ext)
+    #     Xext = X[height_res-1, :]
+    #     Yext = Y[height_res-1, :]
+    #     Zext = np.ones(angle_res) * (height+height_ext)
 
-        X = np.vstack([X,Xext])
-        Y = np.vstack([Y,Yext])
-        Z = np.vstack([Z,Zext])
+    #     X = np.vstack([X,Xext])
+    #     Y = np.vstack([Y,Yext])
+    #     Z = np.vstack([Z,Zext])
 
-        return (X,Y,Z)
+    #     return (X,Y,Z)
 
-    def recover_surface(self,XYZ,extension=True):
-        angle_res = self.cone_angle_res
-        height_res = self.cone_height_res
-        if(extension is True):
-            height_res = height_res + 1
-        X = np.empty((height_res,angle_res))
-        Y = np.empty((height_res,angle_res))
-        Z = np.empty((height_res,angle_res))
-        for i in range(height_res):
-            X[i,:] = XYZ[0,i*angle_res:i*angle_res+angle_res]
-            Y[i,:] = XYZ[1,i*angle_res:i*angle_res+angle_res]
-            Z[i,:] = XYZ[2,i*angle_res:i*angle_res+angle_res]
-        return (X,Y,Z)
+    # def recover_surface(self,XYZ,extension=True):
+    #     angle_res = self.cone_angle_res
+    #     height_res = self.cone_height_res
+    #     if(extension is True):
+    #         height_res = height_res + 1
+    #     X = np.empty((height_res,angle_res))
+    #     Y = np.empty((height_res,angle_res))
+    #     Z = np.empty((height_res,angle_res))
+    #     for i in range(height_res):
+    #         X[i,:] = XYZ[0,i*angle_res:i*angle_res+angle_res]
+    #         Y[i,:] = XYZ[1,i*angle_res:i*angle_res+angle_res]
+    #         Z[i,:] = XYZ[2,i*angle_res:i*angle_res+angle_res]
+    #     return (X,Y,Z)
     
-    # draw cone with given rotation 
-    def draw_cone_euler(self, ax, x,y,z, dirx,diry,dirz, conecolor='None'):
+    # # draw cone with given rotation 
+    # def draw_cone_euler(self, ax, x,y,z, dirx,diry,dirz, conecolor='None'):
     
-        # get copy of cone points constants
-        X = self.coneX.copy()
-        Y = self.coneY.copy()
-        Z = self.coneZ.copy()
+    #     # get copy of cone points constants
+    #     X = self.coneX.copy()
+    #     Y = self.coneY.copy()
+    #     Z = self.coneZ.copy()
 
-        # execute rotation 
-        XYZprime = np.stack( [X.ravel(), Y.ravel(), Z.ravel()] , axis = 0)
-        XYZprime = self.euler_rot(XYZprime, dirx, diry, dirz)
+    #     # execute rotation 
+    #     XYZprime = np.stack( [X.ravel(), Y.ravel(), Z.ravel()] , axis = 0)
+    #     XYZprime = self.euler_rot(XYZprime, dirx, diry, dirz)
 
-        # plot surface
-        (Xp,Yp,Zp) = self.recover_surface(XYZprime)             # get surface-able vectors from a plain XYZ point cloud 
-        graph = ax.plot_surface(Xp+x, Yp+y, Zp+z,alpha=0.35,color=conecolor)          
-        return graph
+    #     # plot surface
+    #     (Xp,Yp,Zp) = self.recover_surface(XYZprime)             # get surface-able vectors from a plain XYZ point cloud 
+    #     graph = ax.plot_surface(Xp+x, Yp+y, Zp+z,alpha=0.35,color=conecolor)          
+    #     return graph
 
     # see: https://stackoverflow.com/questions/12341159/creating-a-3d-cone-or-disk-and-keep-updating-its-axis-of-symmetry-with-matplotli 
     def euler_rot(self,XYZ,phi,theta,psi):
@@ -749,7 +822,7 @@ class View():
                         [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
                         [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
 
-    def draw_ref_plane(self, planecolor = 'plum'):
+    def draw_ref_plane(self, planecolor = 'plum', alpha =0.05):
         if(self.point2plane.plane_ready):
             # get the bounding limits of the current axes in x y
             curxlim3d = self.ax.get_xlim()
@@ -773,17 +846,17 @@ class View():
                 Y = np.array([ymin, ymax, ymin, ymax])
                 Z = -(A*X + B*Y - D)/C
                 #print(Z)
-                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
+                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = alpha)
             elif(np.abs(A) > threshold):
                 Y = np.array([ymin, ymin, ymax, ymax])
                 Z = np.array([zmin, zmax, zmin, zmax])
                 X = -(B*Y + C*Z - D)/A
-                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
+                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = alpha)
             elif(np.abs(B) > threshold):
                 X = np.array([xmin, xmin, xmax, xmax])
                 Z = np.array([zmin, zmax, zmin, zmax])
                 Y = -(A*X + C*Z - D)/B
-                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = 0.15)
+                graph = self.ax.plot_trisurf(X, Y, Z, antialiased = True, color = planecolor, alpha = alpha)
             return graph
         else:
             pass
@@ -855,47 +928,67 @@ class View():
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
         self.ax.cla()
-        self.ax.set_axis_off()              # Huge CPU usage savings from disabling axes.
+        #self.ax.grid(False)
+        #self.ax.set_axis_off()              # Huge CPU usage savings from disabling axes.
         self.ax.set_xlim3d(curxlim3d)
         self.ax.set_ylim3d(curylim3d)
-        self.ax.set_zlim3d(curzlim3d)
+        self.ax.set_zlim3d(curzlim3d)   
 
-        # if(self.ax.elev < 70 and self.ax.elev > -70):
-        #     self.ax.set_zlabel("Z (mm)", color ='grey')         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
-        # else:
-        #     self.ax.set_zticks([])
+        if(self.ax.elev < 70 and self.ax.elev > -70):
+            # self.ax.set_zlabel("Z (mm)", color = axiscolor)         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
+            pass
+        else:
+            self.ax.set_zticks([])
 
-        # if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
-        #     self.ax.set_xlabel("X (mm)", color ='grey')
-        # else:
-        #     self.ax.set_xticks([])
+        if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
+            # self.ax.set_xlabel("X (mm)", color = axiscolor)
+            pass       
+        else:
+            self.ax.set_xticks([])
 
-        # if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
-        #     self.ax.set_ylabel("Y (mm)", color = 'grey')
-        # else:
-        #     self.ax.set_yticks([])
-    
+        if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
+            # self.ax.set_ylabel("Y (mm)", color = axiscolor)
+            pass
+        else:
+            self.ax.set_yticks([])
 
-    def init_plot(self):
+    def plot_init(self):
         print(">Init plot")
         self.reset_axis_limits()
         self.ax.xaxis.pane.fill = False
         self.ax.yaxis.pane.fill = False
         self.ax.zaxis.pane.fill = False
-        self.ax.tick_params(axis='x', colors='grey')
-        self.ax.tick_params(axis='y', colors='grey')
-        self.ax.tick_params(axis='z', colors='grey')
-        self.ax.set_xlabel("X (mm)", color ='grey')
-        self.ax.set_ylabel("Y (mm)", color = 'grey')
-        self.ax.set_zlabel("Z (mm)", color ='grey')
-        self.ax.yaxis._axinfo["grid"]['linewidth'] = 0.1
-        self.ax.xaxis._axinfo["grid"]['linewidth'] = 0.1
-        self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.1
-        self.ax.xaxis.line.set_color('grey')
-        self.ax.yaxis.line.set_color('grey')
-        self.ax.zaxis.line.set_color('grey')
+        self.ax.tick_params(axis='x', colors=axiscolor)
+        self.ax.tick_params(axis='y', colors=axiscolor)
+        self.ax.tick_params(axis='z', colors=axiscolor)
+        # self.ax.set_xlabel("X (mm)", color ='grey')
+        # self.ax.set_ylabel("Y (mm)", color = 'grey')
+        # self.ax.set_zlabel("Z (mm)", color ='grey')
 
-        
+        # _axinfo is at risk of deprecation, be careful using this.
+        self.ax.yaxis._axinfo["grid"]['linewidth'] = 0.05
+        self.ax.xaxis._axinfo["grid"]['linewidth'] = 0.05
+        self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.05
+        self.ax.xaxis._axinfo["grid"]['color'] = axiscolor
+        self.ax.yaxis._axinfo["grid"]['color'] = axiscolor
+        self.ax.zaxis._axinfo["grid"]['color'] = axiscolor
+            
+        # FINALLY, this is how we set the bounding borders (They're the "pane edges") to the colors we want, or delete them. Could not find documentation for this anywhere 
+        # Except here: https://github.com/matplotlib/matplotlib/issues/14022#issuecomment-487419062
+        self.ax.xaxis.pane.set_edgecolor(axiscolor)
+        self.ax.yaxis.pane.set_edgecolor(axiscolor)
+        self.ax.zaxis.pane.set_edgecolor(axiscolor)
+        self.ax.xaxis.pane.set_alpha(0)
+        self.ax.yaxis.pane.set_alpha(0)
+        self.ax.zaxis.pane.set_alpha(0)
+
+        self.ax.xaxis.line.set_color(axiscolor)
+        self.ax.yaxis.line.set_color(axiscolor)
+        self.ax.zaxis.line.set_color(axiscolor)
+        self.ax.xaxis.line.set_alpha(1)
+        self.ax.yaxis.line.set_alpha(1)
+        self.ax.zaxis.line.set_alpha(1)
+
     def reset_axis_limits(self):
         self.ax.view_init()
         self.ax.set_xlim3d(-500,500)
@@ -926,26 +1019,6 @@ class View():
 
     def toggle_stylus(self):
         self.showstylus = not self.showstylus
-
-    # Matplotlib is not thread safe :(((
-    # def plot_worker(self):
-    #     plot_active = False
-    #     while(True):
-    #         try:
-    #             item = plot_worker_in_queue.get(block = False)
-    #             if(item == START_WORKER):
-    #                 plot_active = True
-    #             elif(item == STOP_WORKER):
-    #                 plot_active = False
-    #             elif(item is None):
-    #                 break
-    #         except:
-    #             pass
-                
-    #         if(plot_active):
-    #             self.update_main_canvas()
-
-    #         time.sleep(0.05)
 
     def update_main_canvas(self, i = 1):
         # see original: https://stackoverflow.com/questions/50342300/animating-3d-scatter-plot-using-python-mplotlib-via-serial-data
@@ -981,13 +1054,13 @@ class View():
                 # We really shouldn't redraw the axes this way. But this works and is fast enough to 10000 points.
                 if(self.showrobot is True):
                     # Update robot display
-                    self.robot_render.draw_links()
+                    self.robot_render.draw_links(linkcolor = linkcolor, jointcolor = jointcolor)
                     # print("D-H computed end effector location: " + str(self.robot.get_end_effector_endpoint()))
                 if(self.showstylus is True):
                     #self.draw_cone_euler(self.ax, self.data.tipx[0],self.data.tipy[0],self.data.tipz[0], self.data.dirx[0],self.data.diry[0],self.data.dirz[0], conecolor = styluscolor)
-                    self.robot_render.draw_stylus()
+                    self.robot_render.draw_stylus(color = styluscolor)
 
-                self.robot_render.draw_base_frame()         # always draw base frame.
+                self.robot_render.draw_base_frame(color = jointcolor)         # always draw base frame.
                 #self.ax.plot(self.data.x[-1],self.data.y[-1],self.data.z[-1],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
                 self.ax.plot(self.robot.get_end_effector_endpoint()[0],self.robot.get_end_effector_endpoint()[1],self.robot.get_end_effector_endpoint()[2],color=tipcolor, marker='.', alpha = 1,linestyle="",markersize=2)
                 
@@ -998,7 +1071,7 @@ class View():
 
                 # The text is rather clumsily rendered.Takes a lot of lines!
                 if(self.point2plane.plane_ready):
-                    self.draw_ref_plane()
+                    self.draw_ref_plane(planecolor = planecolor)
                     if(self.point2plane.P_plane_loaded and self.showp2plane):
                         self.draw_point_plane_dist(P2Plcolor)
                         self.textpointplane.set_text("Point to plane: {:>7.3f} mm".format(self.point2plane.d))
@@ -1072,7 +1145,9 @@ class GUI():
         viewmenu = Menu(menubar, tearoff = 0)
         menubar.add_cascade(label = 'View', menu = viewmenu)
         viewmenu.add_command(label = 'Reset viewport', command = self.reset_window)
-        viewmenu.add_checkbutton(label = 'Freeze (%s)' % Keys.freeze, command = self.toggle_render)
+        self.frozen = tk.BooleanVar()
+        self.frozen.set(tk.FALSE)
+        viewmenu.add_checkbutton(label = 'Freeze (%s)' % Keys.freeze, onvalue = tk.TRUE, offvalue = tk.FALSE, variable = self.frozen, command = self.toggle_render)
         viewmenu.add_checkbutton(label = 'Hide path', command = self.toggle_path)
         viewmenu.add_checkbutton(label = 'Hide CSV data', command = self.toggle_csv)
         viewmenu.add_checkbutton(label = 'Hide orientation', command = self.toggle_stylus)
@@ -1080,12 +1155,12 @@ class GUI():
         viewmenu.add_checkbutton(label = 'Hide joints (significant performance gain)', command = self.toggle_robot)
         measModes = Menu(viewmenu, tearoff = 0)
         viewmenu.add_cascade(label = 'Show/hide measurement', menu = measModes)
-        mode1 = tk.IntVar()            # this is supposed to hide measurements by default
-        mode2 = tk.IntVar()
-        measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1, onvalue = 1, offvalue = 0, command = self.toggle_p2plane)
-        measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, onvalue = 1, offvalue = 0, command = self.toggle_p2p)
-        mode1.set(1)                            # I don't understand why the checkbutton doesn't respond to programmed state!! this should enable these by default
-        mode2.set(1)
+        mode1 = tk.BooleanVar()            # this is supposed to hide measurements by default
+        mode2 = tk.BooleanVar()
+        # mode1.set(tk.TRUE)                            # I don't understand why the checkbutton doesn't respond to programmed state!! this should enable these by default
+        # mode2.set(tk.TRUE)
+        measModes.add_checkbutton(label = 'Hide point to plane', variable = mode1,onvalue = tk.TRUE, offvalue = tk.FALSE,  command = self.toggle_p2plane)
+        measModes.add_checkbutton(label = 'Hide point to point', variable = mode2, onvalue = tk.TRUE, offvalue = tk.FALSE, command = self.toggle_p2p)
         viewmenu.add_command(label = ("Snap to XY (%s)" % (Keys.xy)), command = self.view.xy)
         viewmenu.add_command(label = ("Snap to XZ (%s)" % (Keys.xz)), command = self.view.xz)
         viewmenu.add_command(label = ("Snap to YZ (%s)" % (Keys.yz)), command = self.view.yz)
@@ -1099,9 +1174,9 @@ class GUI():
         ops.add_command(label = "Save reference plane point (%s)" % (Keys.plane), command = self.save_ref_plane)
         ops.add_command(label = "Measure point (%s)" % (Keys.point), command = self.save_point_combined  )          
         ops.add_command(label = "Save cloud point (%s)" % (Keys.cloud), command = self.save_cloud_point  )
-        ops.add_command(label = "Rotate (M%s)" % (Keys.rotate), command = None)
+        ops.add_checkbutton(label = "Enable averaging", command = self.toggle_average)
 
-        self.view.init_plot()
+        self.view.plot_init()
         self.view.reset_axis_limits()
         canvas = FigureCanvasTkAgg(self.view.fig, master=root)
         canvas.get_tk_widget().configure(background = 'black', highlightcolor='lightgrey', highlightbackground='lightgrey')         # needed to remove unsightly border 
@@ -1129,7 +1204,6 @@ class GUI():
             if -1 != k.find("keymap"):
                 #print("plt.rcParams[\"%s\"]=[]"%(k))           
                 print("plt.rcParams[%s]=%s"%(k,v))
-                
 
         #self.log_widget = ScrolledText(root, height=4, width=120, bg = 'black', fg = consolecolor, font=('consolas',8), padx = 10, pady = 10)
         self.log_widget = ST(root, height = 4, width = 120, autohide = True, font=('consolas',8))
@@ -1151,6 +1225,8 @@ class GUI():
         self.update = True
         self.console_visible = False
         self.connected = False
+        self.averaging = False
+        self.point_average_ready = True
 
         self.ani = None
 
@@ -1337,11 +1413,17 @@ class GUI():
     def render(self):
         if(self.update):
             self.update_main_canvas()                              # update fig,ax
-            #self.canvas.draw_idle()                                    # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
+            #self.canvas.draw_idle()                               # send updated fig, ax to tkinder window. otherwise the update will not happen until I drag the canvas
                                                                   # draw_idle() and draw() are options. draw_idle() is faster but draw() seems to behave more nicely with the window
         self._renderjob = self.root.after(50, self.render)        # schedule updates with .after
 
-    def toggle_render(self):
+    def toggle_render(self, keyboard_input = False):
+        if(keyboard_input): 
+            if(self.frozen.get() == tk.FALSE):
+                self.frozen.set(tk.TRUE)
+            else:
+                self.frozen.set(tk.FALSE)
+
         if(self.update):
             try:
                 self.ani.pause()
@@ -1356,6 +1438,9 @@ class GUI():
         # if(self.view.arm_attached):
         #     self.view.arm.ser.reset_input_buffer()
         #     self.view.tip_packet_cts = True
+
+    def toggle_average(self):
+        self.averaging = not self.averaging
 
     def toggle_robot(self):
         self.view.toggle_robot()
@@ -1468,11 +1553,15 @@ class GUI():
         print(">Saved measurement point (point to plane)")
         XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
         self.view.point2plane.save_point_to_plane(XYZ)
+    
+    def save_point_averaged(self):
+        print(">Saved to average measurement")
+        XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+        self.view.point2plane.save_point_average(XYZ)
 
     def save_point_combined(self):
-        if(self.view.showp2plane):
+        if(self.averaging == False):
             self.save_point_to_plane()
-        if(self.view.showp2p):
             self.save_point_to_point()
 
     # TODO: 
@@ -1483,7 +1572,12 @@ class GUI():
             case Keys.plane: 
                 self.save_ref_plane()
             case Keys.point:
-                self.save_point_combined()
+                if(self.point_average_ready == True):
+                    self.point_average_ready = False
+                if(self.averaging and self.view.point2plane.buffer_full() == False):
+                    self.save_point_averaged()
+                else:
+                    self.save_point_combined()
             case Keys.xy:
                 self.view.xy()
             case Keys.yz:
@@ -1495,7 +1589,7 @@ class GUI():
             case Keys.cloud:
                 self.save_cloud_point()
             case Keys.freeze:
-                self.toggle_render()
+                self.toggle_render(keyboard_input = True)
             case _:
                 pass
     
@@ -1503,6 +1597,12 @@ class GUI():
         match e.keysym:
             case Keys.pan:
                 self.view._disable_pan()
+            case Keys.point:
+                self.point_average_ready = True
+                if(self.view.point2plane.buffer_full() == False and self.averaging):
+                    print(">Cancelled average measurement, not enough points")
+                self.view.point2plane.clear_point_average()
+                pass
             case _:
                 pass
     
