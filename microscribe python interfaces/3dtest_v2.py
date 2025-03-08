@@ -21,11 +21,22 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
+# from pydub import AudioSegment
+# from pydub.playback import play
+# CMM_beep = AudioSegment.from_wav("bamboo.wav")
+
+import pygame
+pygame.init()
+CMM_beep = pygame.mixer.Sound("cmmbeep2.wav")
+CMM_beep.set_volume(0.3)
+bamboo_sound = pygame.mixer.Sound("bamboo.wav")
+bamboo_sound.set_volume(0.5)
+
 #mpl.use("Agg")
 mpl.use("Qt5Agg")                        # Qt5 FIXES THE .set() method on labels. using .set() on checkbuttons is still broken 
 import mpl_toolkits.mplot3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d import Axes3D,art3d
 
 import tkinter as tk
 from tkinter import Menu, Button, Frame
@@ -66,16 +77,16 @@ STYLE_CRT_AMBER = 'CRT_AMBER'
 style = STYLE_CRT_GREEN
 if(style == STYLE_CRT_GREEN):
     planecolor = 'mediumaquamarine'
-    P2Pcolor = 'skyblue'
+    P2Pcolor = 'lightblue'
     P2Plcolor = 'orangered'
     readoutcolor = 'palegreen'
     indicatorcolor = 'palegreen'
     consolecolor = 'palegreen'
-    styluscolor = 'aquamarine'
+    styluscolor = 'palegreen'
     tipcolor = 'aquamarine'
     cloudcolor = 'red'
     axiscolor = 'palegreen'
-    linkcolor = 'aquamarine'
+    linkcolor = 'palegreen'
     jointcolor = 'palegreen'
 
 elif(style == STYLE_CRT_AMBER):
@@ -200,6 +211,7 @@ class PointMeasure():
             
 
     def save_point(self, XYZ):
+        pygame.mixer.Sound.play(CMM_beep)
         if(self._point_input_index == 0):
             self.P_ref = np.array(XYZ)
             self.P_ref_loaded = True
@@ -266,6 +278,7 @@ class PointMeasure():
                 self.ref_D = self.ref_n.dot(self.ref_Q.T)
                 self.ref_coef = np.hstack([self.ref_n, self.ref_D])
                 print(">Plane ready")
+                pygame.mixer.Sound.play(CMM_beep)
                 print(">[A, B, C, D]:")
                 print(self.ref_coef)
                 print(">Q: ")
@@ -273,6 +286,7 @@ class PointMeasure():
                 self.plane_ready = True
             else:
                 print(">Basis vectors for reference plane not independent. Start over")
+                pygame.mixer.Sound.play(bamboo_sound)
                 self.plane_ready = False
 
             self._plane_input_index = (self._plane_input_index + 1) % 3
@@ -280,6 +294,7 @@ class PointMeasure():
             pass
         
     def save_point_to_plane(self, XYZ):
+        pygame.mixer.Sound.play(CMM_beep)
         self.P_plane_loaded = True
         self.P_plane = np.array(XYZ)
         v = XYZ - self.ref_Q
@@ -472,14 +487,14 @@ class  View():
             point2plane = PointMeasure()
         self.point2plane = point2plane
 
-        # plt.style.use('dark_background')
+        plt.style.use('dark_background')
         self.plt = plt
         self.fig = plt.figure(figsize = (10,10), facecolor = 'black')
 
         # Two ways to generate 3D Axes
         # add_subplot is the proper way to do this. https://github.com/matplotlib/matplotlib/issues/24639
         # 1. add_subplot() or add_axes()
-        #self.ax = self.fig.add_subplot(111, projection = "3d")
+        self.ax = self.fig.add_subplot(111, projection = "3d")
         self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d', facecolor = 'black')
 
         # 2. add_axes(Axes3D)
@@ -915,7 +930,25 @@ class  View():
                                 pass
                     except:
                         pass
-            
+    
+    def draw_grid_xy(self):
+        curxlim3d = self.ax.get_xlim()
+        curylim3d = self.ax.get_ylim()
+        curzlim3d = self.ax.get_zlim()
+        zpos = 0
+        if(self.ax.xaxis.get_ticks_position() == 'default'):
+            zpos = curzlim3d[1]
+        else:
+            zpos = curzlim3d[0]
+        
+        xmin = curxlim3d[0]
+        xmax = curxlim3d[1]
+        ymin = curylim3d[0]
+        ymax = curylim3d[1]
+
+        self.ax.plot([xmin, xmax, xmax, xmin, xmin], [ymin, ymin, ymax, ymax, ymin], [zpos, zpos, zpos, zpos, zpos], color = axiscolor, linewidth = 0.5)       # There's got to a better way to plot these lines.
+
+
     def frame_reset(self):
         # running this every time is a very slow way to animate.
         # depending on the orientation hide some labels
@@ -932,7 +965,8 @@ class  View():
         #self.ax.set_axis_off()              # Huge CPU usage savings from disabling axes.
         self.ax.set_xlim3d(curxlim3d)
         self.ax.set_ylim3d(curylim3d)
-        self.ax.set_zlim3d(curzlim3d)   
+        self.ax.set_zlim3d(curzlim3d) 
+        self.ax.set_zticks([])  
 
         if(self.ax.elev < 70 and self.ax.elev > -70):
             # self.ax.set_zlabel("Z (mm)", color = axiscolor)         # using the clumsy clear/redraw with cla(): ticks are by default visible, and the labels are by default invisible. So set them like this
@@ -940,27 +974,26 @@ class  View():
         else:
             self.ax.set_zticks([])
 
-        if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 20):
+        if((np.abs(self.ax.azim) > 20 and np.abs(self.ax.azim) <160) or np.abs(self.ax.elev) > 5):
             # self.ax.set_xlabel("X (mm)", color = axiscolor)
             pass       
         else:
             self.ax.set_xticks([])
 
-        if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 20):
+        if(np.abs(self.ax.azim) < 70 or np.abs(self.ax.azim) > 110 or np.abs(self.ax.elev) > 5):
             # self.ax.set_ylabel("Y (mm)", color = axiscolor)
             pass
         else:
             self.ax.set_yticks([])
+        # self.draw_grid_xy()
 
     def plot_init(self):
         print(">Init plot")
         self.reset_axis_limits()
-        self.ax.xaxis.pane.fill = False
-        self.ax.yaxis.pane.fill = False
-        self.ax.zaxis.pane.fill = False
         self.ax.tick_params(axis='x', colors=axiscolor)
         self.ax.tick_params(axis='y', colors=axiscolor)
         self.ax.tick_params(axis='z', colors=axiscolor)
+
         # self.ax.set_xlabel("X (mm)", color ='grey')
         # self.ax.set_ylabel("Y (mm)", color = 'grey')
         # self.ax.set_zlabel("Z (mm)", color ='grey')
@@ -968,26 +1001,29 @@ class  View():
         # _axinfo is at risk of deprecation, be careful using this.
         self.ax.yaxis._axinfo["grid"]['linewidth'] = 0.05
         self.ax.xaxis._axinfo["grid"]['linewidth'] = 0.05
-        self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.05
+        self.ax.zaxis._axinfo["grid"]['linewidth'] = 0.0
         self.ax.xaxis._axinfo["grid"]['color'] = axiscolor
         self.ax.yaxis._axinfo["grid"]['color'] = axiscolor
         self.ax.zaxis._axinfo["grid"]['color'] = axiscolor
-            
+        
         # FINALLY, this is how we set the bounding borders (They're the "pane edges") to the colors we want, or delete them. Could not find documentation for this anywhere 
         # Except here: https://github.com/matplotlib/matplotlib/issues/14022#issuecomment-487419062
-        self.ax.xaxis.pane.set_edgecolor(axiscolor)
-        self.ax.yaxis.pane.set_edgecolor(axiscolor)
-        self.ax.zaxis.pane.set_edgecolor(axiscolor)
-        self.ax.xaxis.pane.set_alpha(0)
-        self.ax.yaxis.pane.set_alpha(0)
-        self.ax.zaxis.pane.set_alpha(0)
+        # self.ax.xaxis.pane.set_edgecolor(axiscolor)
+        # self.ax.yaxis.pane.set_edgecolor(axiscolor)
+        # self.ax.zaxis.pane.set_edgecolor(axiscolor)
+        # self.ax.xaxis.pane.set_alpha(0)
+        # self.ax.yaxis.pane.set_alpha(0)
+        # self.ax.zaxis.pane.set_alpha(0)
+        self.ax.xaxis.set_pane_color(color = axiscolor, alpha = 0)
+        self.ax.yaxis.set_pane_color(color = axiscolor, alpha = 0)
+        self.ax.zaxis.set_pane_color(color = axiscolor, alpha = 0)
 
         self.ax.xaxis.line.set_color(axiscolor)
         self.ax.yaxis.line.set_color(axiscolor)
         self.ax.zaxis.line.set_color(axiscolor)
         self.ax.xaxis.line.set_alpha(1)
         self.ax.yaxis.line.set_alpha(1)
-        self.ax.zaxis.line.set_alpha(1)
+        self.ax.zaxis.line.set_alpha(0)
 
     def reset_axis_limits(self):
         self.ax.view_init()
@@ -998,7 +1034,6 @@ class  View():
         curxlim3d = self.ax.get_xlim()
         curylim3d = self.ax.get_ylim()
         curzlim3d = self.ax.get_zlim()
-        self.ax.dist = 12
         self.ax.set_aspect('equal')                                                              # need this to have cubes look right
         #self.ax.set_box_aspect((np.ptp(curxlim3d), np.ptp(curylim3d), np.ptp(curzlim3d)))       # this also works to make cubes look right
     
@@ -1232,7 +1267,10 @@ class GUI():
 
         self.update_console()
                 
-        def close_window():            
+        def close_window():         
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            pygame.quit()
             if(self.ani is not None):
                 try:
                     self.ani.pause()
@@ -1245,8 +1283,7 @@ class GUI():
                 self.view.arm.ser.close()
             self.root.quit() # this doesn't seem to normally run and is needed to close properly
             self.root.destroy()
-            sys.stdout = sys.__stdout__
-            sys.stderr = sys.__stderr__
+
             
         self.root.protocol("WM_DELETE_WINDOW", close_window)
 
@@ -1625,7 +1662,7 @@ if __name__ == "__main__":
     serial_poll_worker = Thread(target = app.view.serial_worker, args = (), daemon = True)
     serial_poll_worker.start()
 
-    app.view.data.testCSV()
+    #app.view.data.testCSV()
     app.gui.auto_scan()
     app.gui.render_ani()        # use built-in animation scheduler. Do not run this multiple times, it will double schedule the animation updates.
     #app.gui.render()
