@@ -103,9 +103,6 @@ elif(style == STYLE_CRT_AMBER):
     linkcolor = 'darkorange'
     jointcolor = 'darkorange'
 
-
-
-
 NUM_ENCODERS = 5        # Number of encoders to read. Do we really need this here
 
 # Shared queue commands
@@ -191,27 +188,31 @@ class PointMeasure():
         self.y = []
         self.z = []
     
-    def save_point_average(self, XYZ):
+    def save_point_average(self, XYZ, override=False):
         if(len(self.x) < self.averaging_window):
             self.x.append(XYZ[0])
             self.y.append(XYZ[1])
             self.z.append(XYZ[2])
 
-        if(len(self.x) >= self.averaging_window):
+        if(len(self.x) >= self.averaging_window or override==True):
             meanx = np.mean(self.x)
             meany = np.mean(self.y)
             meanz = np.mean(self.z)
             sx = np.std(self.x)
             sy = np.std(self.y)
             sz = np.std(self.z)
+            print(">Samples: %d" % len(self.x))
             print(">MEAN XYZ: %.4f %.4f %.4f" % (meanx, meany, meanz))
             print(">SDEV XYZ: %.4f %.4f %.4f" % (sx, sy, sz))
             self.save_point([meanx, meany, meanz])
             self.save_point_to_plane([meanx, meany, meanz])
-            
+
+            if(override == True):
+                pygame.mixer.Sound.play(bamboo_sound)
+            else:
+                pygame.mixer.Sound.play(CMM_beep)
 
     def save_point(self, XYZ):
-        pygame.mixer.Sound.play(CMM_beep)
         if(self._point_input_index == 0):
             self.P_ref = np.array(XYZ)
             self.P_ref_loaded = True
@@ -248,41 +249,33 @@ class PointMeasure():
             self.plane_ready = False
             self.P_plane_loaded = False
             self.ref_Q = np.array(XYZ)
-            print(">Saved ref Q")
-            print(self.ref_Q)
+            print(">Saved ref Q: " + str(self.ref_Q))
             self._plane_input_index = (self._plane_input_index + 1) % 3
             return
         
         elif(self._plane_input_index == 1):
             self.ref_S = np.array(XYZ)
-            print(">Saved ref S")
-            print(self.ref_S)
+            print(">Saved ref S: " + str(self.ref_S))
             self._plane_input_index = (self._plane_input_index + 1) % 3
             return
         
         elif(self._plane_input_index == 2):
             self.ref_T = np.array(XYZ)
-            print(">Saved ref T")
-            print(self.ref_T)
+            print(">Saved ref T: " + str(self.ref_T))
             b1 = self.ref_S - self.ref_Q
-            print(">b1")
-            print(b1)
+            print(">b1: " + str(b1))
             b2 = self.ref_T - self.ref_Q
-            print(">b2")
-            print(b2)
+            print(">b2: " + str(b2))
             if(not np.array_equal(b1,b2)):
                 N = np.cross(b1,b2)
-                print(">N")
-                print(N)
+                print(">N: " + str(N))
                 self.ref_n = N/ np.linalg.norm(N)
                 self.ref_D = self.ref_n.dot(self.ref_Q.T)
                 self.ref_coef = np.hstack([self.ref_n, self.ref_D])
                 print(">Plane ready")
                 pygame.mixer.Sound.play(CMM_beep)
-                print(">[A, B, C, D]:")
-                print(self.ref_coef)
-                print(">Q: ")
-                print(self.ref_Q)
+                print(">[A, B, C, D]: " + str(self.ref_coef))
+                print(">Q: " + str(self.ref_Q))
                 self.plane_ready = True
             else:
                 print(">Basis vectors for reference plane not independent. Start over")
@@ -294,7 +287,6 @@ class PointMeasure():
             pass
         
     def save_point_to_plane(self, XYZ):
-        pygame.mixer.Sound.play(CMM_beep)
         self.P_plane_loaded = True
         self.P_plane = np.array(XYZ)
         v = XYZ - self.ref_Q
@@ -493,13 +485,10 @@ class  View():
 
         # Two ways to generate 3D Axes
         # add_subplot is the proper way to do this. https://github.com/matplotlib/matplotlib/issues/24639
-        # 1. add_subplot() or add_axes()
-        self.ax = self.fig.add_subplot(111, projection = "3d")
+        # add_subplot() or add_axes()
+        #self.ax = self.fig.add_subplot(111, projection = "3d")
         self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d', facecolor = 'black')
 
-        # 2. add_axes(Axes3D)
-        # ax3d = Axes3D(self.fig)
-        # self.ax = self.fig.add_axes(ax3d)       
 
         self.ax.mouse_init(rotate_btn = 2, pan_btn = 1, zoom_btn=3)                         # disable the drag zoom
         #self.fig.canvas.callbacks._connect_picklable('scroll_event', self._on_scroll)      # alternate method for attaching event callbacks used inside mpl. 
@@ -515,11 +504,11 @@ class  View():
 
         font = 'monospace'
         #self.text1 = self.fig.text(0, 0.00, "NUMBER OF POINTS", va='bottom', ha='left',color=indicatorcolor,fontsize=7, name = font)  
-        self.textreadout = self.fig.text(0.5,0.96, "XYZ DATA", va='center', ha='center',color=readoutcolor,fontsize=18, name = font)
+        self.textreadout = self.fig.text(0.5,0.94, "XYZ DATA", va='center', ha='center',color=readoutcolor,fontsize=18, name = font)
         self.textreadout.set_bbox(dict(facecolor='black', alpha=1, edgecolor=readoutcolor))
         self.textcloudpoints = self.fig.text(0, 0.015, "NUMBER OF SAVED POINTS", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
         self.textfps = self.fig.text(0, 0.03, "FRAME TIME", va='bottom', ha='left', color=indicatorcolor, fontsize = 7, name = font)
-        self.textpointplane = self.fig.text(0.5, 0.1, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = P2Plcolor, fontsize = 18, name = font)
+        self.textpointplane = self.fig.text(0.5, 0.12, "NORMAL DISTANCE TO PLANE", va='bottom', ha='center', color = P2Plcolor, fontsize = 18, name = font)
         self.textpointplane.set_bbox(dict(facecolor='black', alpha=1, edgecolor=P2Plcolor))
         self.textplanerefpoints = self.fig.text(1, 0, "NUMBER OF PLANE REFERENCE POINTS", va='bottom', ha='right', color = indicatorcolor, name = font, fontsize = 7)
         self.textpointpoint = self.fig.text(0.5, 0.06, "POINT TO POINT", va = 'bottom', ha = 'center', color = P2Pcolor, fontsize = 18, name = font)
@@ -599,14 +588,7 @@ class  View():
                         self.arm.ser.write(('t>').encode('utf-8'))     # combined command for everything: thetas, then calculated tip position. 
                         tip_packet_cts = False                         # last command was tip position, so we'll be looking for that.
                     
-                    while((not tip_packet_cts) and self.arm.ser.in_waiting):          
-
-                        # current_frame_time = timeit.default_timer() - start
-                        # self.current_frame_avg_queue.append(current_frame_time)
-                        # if len(self.current_frame_avg_queue) > 10:
-                        #     self.current_frame_avg_queue.pop(0)
-                        # start = timeit.default_timer()
-
+                    while((not tip_packet_cts) and self.arm.ser.in_waiting):         
                         try:
                             serial_rx = self.arm.ser.readline()
                             indata = str(serial_rx[0:len(serial_rx)-2].decode("utf-8"))
@@ -629,6 +611,8 @@ class  View():
                                 self.robot.set_angles(self.data.joints, base_offset = True)         
 
                         except UnicodeDecodeError:
+                            print(repr(e))
+                            print(">Serial data parse error. Skipping packet")
                             pass
                     
                         except serial.SerialException:     # couldn't read - lost connection
@@ -644,7 +628,7 @@ class  View():
                 pass
             time.sleep(0.0125) # we've got to let other guys access the data
 
-        print("Exiting serial worker thread")
+        print(">Exiting serial worker thread")
 
     def _on_close_fig(self, event):
         self.detach_arm()
@@ -837,7 +821,7 @@ class  View():
                         [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
                         [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
 
-    def draw_ref_plane(self, planecolor = 'plum', alpha =0.05):
+    def draw_ref_plane(self, planecolor = 'plum', alpha =0.2):
         if(self.point2plane.plane_ready):
             # get the bounding limits of the current axes in x y
             curxlim3d = self.ax.get_xlim()
@@ -1142,14 +1126,8 @@ class  View():
                 print(repr(e))
                 print(">Waiting for data update...")
                 pass
-
         else:
             self.textdisconnected.set_visible(True)
-        
-        # if self.fig.canvas.figure.stale:
-        #     self.fig.canvas.draw()
-        # self.fig.canvas.flush_events()
-
 
 class GUI():
     def __init__(self, view = None):
@@ -1235,13 +1213,13 @@ class GUI():
         plt.rcParams["keymap.yscale"]=[]
         plt.rcParams["keymap.zoom"]=[]
 
-        for k,v in plt.rcParams.items():
-            if -1 != k.find("keymap"):
-                #print("plt.rcParams[\"%s\"]=[]"%(k))           
-                print("plt.rcParams[%s]=%s"%(k,v))
+        # for k,v in plt.rcParams.items():
+        #     if -1 != k.find("keymap"):
+        #         #print("plt.rcParams[\"%s\"]=[]"%(k))           
+        #         print("plt.rcParams[%s]=%s"%(k,v))
 
         #self.log_widget = ScrolledText(root, height=4, width=120, bg = 'black', fg = consolecolor, font=('consolas',8), padx = 10, pady = 10)
-        self.log_widget = ST(root, height = 4, width = 120, autohide = True, font=('consolas',8))
+        self.log_widget = ST(root, height = 8, width = 120, autohide = True, font=('consolas',8))
         self.log_widget.text.configure(bg = 'black', fg = consolecolor)
         #self.log_label = tk.Label( root, text = "CONSOLE OUTPUT:", bg=consolecolor, fg= 'black', font=('consolas', 8, "bold") )
         self.log_label = tb.Label(root, text = "CONSOLE OUTPUT:", background = consolecolor, foreground='black', font=('consolas', 8, "bold"))
@@ -1250,22 +1228,23 @@ class GUI():
         canvas.get_tk_widget().pack(padx = 10, pady = 10, side='bottom', fill='both', expand=True)
         #canvas._tkcanvas.pack(side='top', fill='both', expand=True)                                    # I don't know why we also have this, I stole this code after all.
 
-        self.logger = PrintLogger(self.log_widget)                                                           # redirecting the stdout to the logging widget
-        # sys.stdout = self.logger
-        # sys.stderr = self.logger
-    
+        self.logger = PrintLogger(self.log_widget)                                                           # for redirecting the stdout to the logging widget
         self.root = root
         self.canvas = canvas
         self.menu = menubar
+
         self.update = True
         self.console_visible = False
         self.connected = False
         self.averaging = False
         self.point_average_ready = True
-
         self.ani = None
 
         self.update_console()
+        
+        self.root.config(menu = menubar)
+        root.bind("<Key>", self.key_handler)
+        root.bind("<KeyRelease>", self.key_release_handler)
                 
         def close_window():         
             sys.stdout = sys.__stdout__
@@ -1286,13 +1265,6 @@ class GUI():
 
             
         self.root.protocol("WM_DELETE_WINDOW", close_window)
-
-        self.root.config(menu = menubar)
-        root.bind("<Key>", self.key_handler)
-        root.bind("<KeyRelease>", self.key_release_handler)
-
-        # self.ani = animation.FuncAnimation(self.view.fig, self.view.update_lines, interval=50, frames=1, blit=False)    # this may not be good to have run automatically on class instantiation
-        # self.ani.pause()
 
     def update_main_canvas(self, i = 1):
         self.view.update_main_canvas()
@@ -1426,11 +1398,11 @@ class GUI():
             with f:
                 for i in range(len(self.view.data.savex)):
                     row = "%.2f, %.2f, %.2f\n" % (self.view.data.savex[i], self.view.data.savey[i], self.view.data.savez[i])
-                    print("Write row to file:" + row.rstrip('\n'))
+                    #print("Write row to file:" + row.rstrip('\n'))
                     f.write(row)
-                print("Wrote {0} lines to {1}".format(len(self.view.data.savex), f.name))
+                print(">Wrote {0} lines to {1}".format(len(self.view.data.savex), f.name))
         else:
-            print("No file chosen. Returning")
+            print(">No file chosen. Returning")
             pass
 
     # # Start custom render with threading
@@ -1478,6 +1450,7 @@ class GUI():
 
     def toggle_average(self):
         self.averaging = not self.averaging
+        print(">Averaging: " + str(self.averaging))
 
     def toggle_robot(self):
         self.view.toggle_robot()
@@ -1577,29 +1550,32 @@ class GUI():
 
     def save_ref_plane(self):
         if(self.view.showp2plane):
-            print(">Saved reference point")
             XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+            print(">Saved reference point at " + str(XYZ))
             self.view.point2plane.save_ref_plane_point(XYZ)
 
-    def save_point_to_point(self):
-        print(">Saved measurement point (point to point)")
-        XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
-        self.view.point2plane.save_point(XYZ)
+    # def save_point_to_point(self):
+    #     XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+    #     print(">Measure point to point at " + str(XYZ))
+    #     self.view.point2plane.save_point(XYZ)
 
-    def save_point_to_plane(self):
-        print(">Saved measurement point (point to plane)")
-        XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
-        self.view.point2plane.save_point_to_plane(XYZ)
+    # def save_point_to_plane(self):
+    #     XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+    #     print(">Measure point to plane at " + str(XYZ))
+    #     self.view.point2plane.save_point_to_plane(XYZ)
     
-    def save_point_averaged(self):
-        print(">Saved to average measurement")
+    def save_point_averaged(self, override = False):
         XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
-        self.view.point2plane.save_point_average(XYZ)
+        print(">Append to average " + str(XYZ))
+        self.view.point2plane.save_point_average(XYZ, override)
 
     def save_point_combined(self):
+        pygame.mixer.Sound.play(CMM_beep)
+        XYZ = [self.view.data.tipx[0], self.view.data.tipy[0], self.view.data.tipz[0]]
+        print(">Measurement at " + str(XYZ))
         if(self.averaging == False):
-            self.save_point_to_plane()
-            self.save_point_to_point()
+            self.view.point2plane.save_point(XYZ)
+            self.view.point2plane.save_point_to_plane(XYZ)
 
     # TODO: 
     # move the key handler into the view class, this is all canvas stuff anyways. 
@@ -1613,7 +1589,7 @@ class GUI():
                     self.point_average_ready = False
                 if(self.averaging and self.view.point2plane.buffer_full() == False):
                     self.save_point_averaged()
-                else:
+                elif(self.averaging == False):
                     self.save_point_combined()
             case Keys.xy:
                 self.view.xy()
@@ -1635,10 +1611,11 @@ class GUI():
             case Keys.pan:
                 self.view._disable_pan()
             case Keys.point:
-                self.point_average_ready = True
                 if(self.view.point2plane.buffer_full() == False and self.averaging):
-                    print(">Cancelled average measurement, not enough points")
+                    self.save_point_averaged(override = True)
+                    print(">Average with partial buffer")
                 self.view.point2plane.clear_point_average()
+                self.point_average_ready = True
                 pass
             case _:
                 pass
